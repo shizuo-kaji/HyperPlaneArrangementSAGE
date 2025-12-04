@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=65", "wheel", "sageconf", "sage-setup"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hyperplane-arrangements"
+version = "0.1.0"
+description = "Logarithmic vector fields for convex hyperplane arrangements"
+readme = "README.md"
+authors = [{name = "Maple Hyperplane Team"}]
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = ["sageconf"]
+keywords = ["sage", "arrangements", "vector-fields"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Mathematics"
+]
+
+[project.urls]
+Homepage = "https://example.com/hyperplane-arrangements"
+Documentation = "https://doc.sagemath.org/"
