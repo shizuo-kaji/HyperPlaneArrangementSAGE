@@ -1,8 +1,7 @@
 """Setup script for the Hyperplane Arrangements Sage package."""
 from pathlib import Path
 
-from sage_setup import setup
-from setuptools import find_packages
+from setuptools import setup, find_packages
 
 ROOT = Path(__file__).parent
 

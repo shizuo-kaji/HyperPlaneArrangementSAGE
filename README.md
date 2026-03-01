@@ -48,6 +48,16 @@ For more details, see the Jupyter Notebooks below:
   - Synthetic `ConvexPolygonFlow` generator
   - Produces tangential vector-field samples, vorticity, and divergence
 
+## Important: Jupyter Kernel
+
+> **All notebooks in this repository must be run with the SageMath kernel, not a plain Python kernel.**
+
+When opening a notebook in JupyterLab / VS Code, make sure the kernel is set to **SageMath** (e.g. `SageMath 10.x`).
+If you see `ModuleNotFoundError: No module named 'sage'`, switch the kernel to SageMath.
+
+- **JupyterLab**: *Kernel → Change Kernel → SageMath*
+- **VS Code**: click the kernel name in the top-right corner of the notebook and select *SageMath*
+
 ## Quick Start Example
 
 See Jupyter Notebooks.

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=65", "wheel", "sageconf", "sage-setup"]
+requires = ["setuptools>=65", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,7 +10,7 @@ readme = "README.md"
 authors = [{name = "Maple Hyperplane Team"}]
 license = {text = "MIT"}
 requires-python = ">=3.11"
-dependencies = ["sageconf"]
+dependencies = []
 keywords = ["sage", "arrangements", "vector-fields"]
 classifiers = [
     "Programming Language :: Python :: 3",
