@@ -1,6 +1,6 @@
 # Logarithmic Derivation Module of Hyperplane Arrangement
 
-A Sage package for working with logarithmic vector fields and hyperplane arrangements, with applications to vector field reconstruction.
+A Sage package for logarithmic vector fields and hyperplane arrangements, with applications to vector field reconstruction.
 
 ## Authors
 Developed by **Junyan Chu** and **Shizuo Kaji**
@@ -71,4 +71,4 @@ See Jupyter Notebooks.
 
 - **`vector_field_reconstruction.ipynb`**
   - Demonstrates vector field reconstruction from synthetic data
-  - Junyan Chu, Shizuo Kaji: Polynomial Interpolation of a Vector Field on a Convex Polygonal Domain, preprint
+  - Junyan Chu, Shizuo Kaji: Polynomial Interpolation of a Vector Field on a Convex Polygonal Domain, arXiv:2602.01803

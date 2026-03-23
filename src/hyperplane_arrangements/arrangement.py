@@ -12,7 +12,7 @@ from scipy.linalg import lstsq
 from scipy.spatial import ConvexHull, QhullError
 
 # Sage imports
-from sage.all import kernel,Rational,singular,random_vector,factor
+from sage.all import kernel,Rational,singular,random_vector,factor,diff
 from sage.structure.sage_object import SageObject
 from sage.misc.cachefunc import cached_method
 from sage.rings.integer_ring import ZZ
@@ -215,6 +215,15 @@ class HyperplaneArrangement(SageObject):
 
         if not rows:
             raise ValueError('no hyperplanes constructed from vertices')
+
+        # Include the hyperplane at infinity x_0 = 0 so that the cone
+        # construction matches Q = x_0 * prod(h_i) as required by the
+        # logarithmic derivation theory.  Without this extra plane the
+        # dehomogenisation / euler_complement pipeline cannot guarantee
+        # affine tangency.
+        n_homog = len(rows[0])            # dim + 1 (spatial coords + constant)
+        h_inf = [base_field(0)] * (n_homog - 1) + [base_field(1)]
+        rows.insert(0, h_inf)
 
         return matrix(base_field, rows)
 
@@ -650,6 +659,13 @@ class HyperplaneArrangement(SageObject):
                 for x, y in zip(xv.ravel(), yv.ravel()):
                     vx.append(u_c[0](Rational(x), Rational(y), 1))
                     vy.append(u_c[1](Rational(x), Rational(y), 1))
+            elif len(u) == self.n - 1 and self.n == 3:
+                u_c = u
+                subs_template = {self.v[2]: 1}
+                for x, y in zip(xv.ravel(), yv.ravel()):
+                    subs_q = {self.v[0]: Rational(x), self.v[1]: Rational(y), **subs_template}
+                    vx.append(u[0].subs(subs_q))
+                    vy.append(u[1].subs(subs_q))
             else:
                 u_c = u
                 for x, y in zip(xv.ravel(), yv.ravel()):
@@ -681,6 +697,14 @@ class HyperplaneArrangement(SageObject):
         ax.set_aspect('equal')
         ax.axis('off')
         return ax
+
+    def plot_arr(self, **kwargs):
+        r"""Backward-compatible wrapper for plotting only the arrangement."""
+        return self.plot(u=None, **kwargs)
+
+    def plot_vfield(self, u, **kwargs):
+        r"""Backward-compatible wrapper for plotting a vector field on ``self``."""
+        return self.plot(u=u, **kwargs)
 
     def _line_ends(self,alpha,xlim=None,ylim=None):
         # find end points of the line defined by a linear form alpha
@@ -750,17 +774,20 @@ def saito(MG):
 # find linearly independent derivations among a given list G
 def vector_basis(G):
     r"""Extract a vector-space basis from a list of derivations."""
-    n = len(G[0].base_ring().gens())
+    if not G:
+        return []
+    n_vars = len(G[0].base_ring().gens())
+    n_comp = len(G[0])
     maxdeg = degseq(G)[-1]
     if maxdeg < 1:
         return [G[0]]
     Sk_list = []
     for k in range(maxdeg + 1):
-        Sk_list.extend(sk_expo(k, n))
+        Sk_list.extend(sk_expo(k, n_vars))
     Sk_dic = {e: i for i, e in enumerate(Sk_list)}
     if len(Sk_dic) == 0:
         return []
-    V1 = vector_to_flatten(G, Sk_dic)
+    V1 = vector_to_flatten(G, Sk_dic, n=n_comp)
     return [G[i] for i in V1.pivots()]
 
 # experimental
@@ -1390,6 +1417,45 @@ def dehomogenise(A, G):
     v1 = A.S.gens()
     return [A.euler_complement(g, A.n - 1).subs({v1[A.n - 1]: 1}) for g in G]
 
+
+def affine_basis(A, G):
+    r"""
+    Return an affine-chart basis suitable for planar reconstruction.
+
+    INPUT:
+
+    - ``A`` -- hyperplane arrangement.
+    - ``G`` -- list of generators in the homogeneous module, or an already
+      affine list of vector fields with ``A.n - 1`` components.
+
+    OUTPUT:
+
+    Vector-space basis of affine vector fields on the chart ``x_n = 1``.
+    For homogeneous inputs this drops the final component after
+    dehomogenisation.
+
+    """
+    if not G:
+        return []
+    if len(G[0]) == A.n - 1:
+        affine_fields = [vector(g) for g in G]
+    else:
+        affine_fields = [vector(g[:A.n - 1]) for g in dehomogenise(A, G)]
+
+    maxdeg = degseq(affine_fields)[-1]
+    if maxdeg < 1:
+        return [affine_fields[0]]
+
+    Sk_list = []
+    for k in range(maxdeg + 1):
+        Sk_list.extend(sk_expo(k, len(affine_fields[0].base_ring().gens())))
+    Sk_dic = {e: i for i, e in enumerate(Sk_list)}
+    if len(Sk_dic) == 0:
+        return []
+
+    V1 = vector_to_flatten(affine_fields, Sk_dic, n=A.n - 1)
+    return [affine_fields[i] for i in V1.pivots()]
+
 def fit_vf(A, Obs, mod_gens, verbose=True):
     """
     Fit a vector field to observations using least squares.
@@ -1408,8 +1474,7 @@ def fit_vf(A, Obs, mod_gens, verbose=True):
 
     """
     v1 = A.S.gens()
-    # Remove linear dependency and get basis
-    G = vector_basis(dehomogenise(A, mod_gens))
+    G = affine_basis(A, mod_gens)
     if verbose:
         print(f'Basis dimension: {len(G)}')
 
@@ -1522,7 +1587,7 @@ def fit_vorticity(A, Obs, mod_gens, verbose=True):
         raise NotImplementedError('vorticity fitting currently supports only 2D domains')
 
     v1 = A.S.gens()
-    basis = vector_basis(dehomogenise(A, mod_gens))
+    basis = affine_basis(A, mod_gens)
     if verbose:
         print(f'Basis dimension: {len(basis)}')
 
@@ -1657,7 +1722,8 @@ def div(u, S):
     Divergence ∇·u
     """
     v = S.gens()
-    return sum(diff(u[i], v[i]) for i in range(len(v)))
+    n_spatial = min(len(u), len(v))
+    return sum(diff(u[i], v[i]) for i in range(n_spatial))
 
 def rot(u, S):
     """
@@ -1672,10 +1738,10 @@ def rot(u, S):
 
     Rotation ∇×u (scalar in 2D)
 
-    NOTE: Currently only implemented for 2D
+    NOTE: Uses the first two coordinates/variables of ``u`` and ``S``.
     """
-    if len(S.gens()) != 3:
-        raise NotImplementedError("Rotation only implemented for 2D")
+    if len(u) < 2 or len(S.gens()) < 2:
+        raise NotImplementedError("Rotation requires at least two coordinates")
     v = S.gens()
     return diff(u[1], v[0]) - diff(u[0], v[1])
 
@@ -1693,8 +1759,8 @@ def laplacian(u, S):
     Vector Laplacian ∇²u
     """
     v = S.gens()
-    n = len(v)
-    return [sum(diff(diff(u[j], v[i]), v[i]) for i in range(n))
+    n_spatial = min(len(u), len(v))
+    return [sum(diff(diff(u[j], v[i]), v[i]) for i in range(n_spatial))
             for j in range(len(u))]
 
 def divergence_free(G):
@@ -1777,7 +1843,7 @@ def _differential_free(G, op, n_comp):
     MD = vector_to_flatten(C, Sk_dic, n=n_comp)
 
     # Solve homogeneous system
-    ker = MD.T.right_kernel().matrix()
+    ker = MD.right_kernel().matrix()
     return [sum(a[i]*G[i] for i in range(len(G))) for a in ker]
 
 
@@ -1810,6 +1876,7 @@ __all__ = [
     'minimal_generating_set',
     'min_gen_arr',
     'dehomogenise',
+    'affine_basis',
     'fit_vf',
     'fit_vorticity',
     'given_min_error',
