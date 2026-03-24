@@ -398,6 +398,173 @@ class HyperplaneArrangement(SageObject):
             print("No planes found")
         return plane
 
+    def delta_I(self, I=None, generators=None):
+        r"""
+        Compute the signed maximal minors `\Delta_I` and Saito coefficients `g_I`.
+
+        For a `p \times \ell` derivation matrix `M` with rows `\theta_1, \ldots, \theta_p`,
+        and a subset `I = \{i_1 < \cdots < i_\ell\} \subseteq [p]` (0-indexed),
+        define
+
+        .. math::
+
+            \Delta_I = (-1)^{\sigma(I)} \det(M_I), \qquad
+            \sigma(I) = \sum_{k=1}^{\ell}(i_k - k) + \ell
+
+        where `M_I` is the submatrix of rows indexed by `I`.
+        Since each `\theta_i \in D(\mathcal{A})`, `\Delta_I` is divisible by `Q`,
+        and we write `\Delta_I = g_I \cdot Q`.
+
+        In the SPOG case (`p = \ell + 1`), we use the simplified notation
+        `\Delta_i = (-1)^i \det(M_{[p] \setminus \{i\}})` (0-indexed `i`).
+
+        Parameters
+        ----------
+        I : list of int or list of lists, optional
+            A subset (or list of subsets) of row indices (0-indexed).
+            If ``None``, all `\binom{p}{\ell}` subsets are computed.
+        generators : list of VectorField, optional
+            Custom generators to use instead of ``self.minimal_generators()``.
+
+        Returns
+        -------
+        dict
+            A dictionary mapping each tuple `I` to a pair `(\Delta_I, g_I)`.
+        """
+        if generators is not None:
+            m = self._to_matrix(generators)
+        else:
+            m = self._to_matrix(self.minimal_generators())
+        p = m.nrows()
+        ell = self.n
+
+        if I is not None:
+            # allow a single subset
+            if isinstance(I[0], (int, Integer)):
+                subsets = [tuple(sorted(I))]
+            else:
+                subsets = [tuple(sorted(s)) for s in I]
+        else:
+            subsets = list(itertools.combinations(range(p), ell))
+
+        result = {}
+        for sub in subsets:
+            sigma = sum(sub[k] - k for k in range(ell))
+            sign = (-1) ** sigma
+            det_val = sign * m[list(sub), :].det()
+            g = det_val // self.Q
+            result[sub] = (det_val, g)
+        return result
+
+    @staticmethod
+    def _to_matrix(generators):
+        """Convert generators to a matrix, accepting VectorField objects, vectors, or lists."""
+        if hasattr(generators, 'gens'):  # VectorFieldModule
+            return matrix([g.v for g in generators])
+        rows = []
+        for g in generators:
+            if isinstance(g, VectorField):
+                rows.append(g.v)
+            elif hasattr(g, 'parent'):  # Sage vector
+                rows.append(g)
+            else:
+                rows.append(vector(g))
+        return matrix(rows)
+
+    def saito_coefficients(self, generators=None):
+        r"""
+        For the SPOG case (`p = \ell + 1`), compute the simplified Saito coefficients.
+
+        Returns a list `[g_0, g_1, \ldots, g_\ell]` where
+        `\Delta_i = (-1)^i \det(M_{[p] \setminus \{i\}}) = g_i \cdot Q`.
+
+        Also verifies the relation `\sum g_i \theta_i = 0`.
+
+        Parameters
+        ----------
+        generators : list, optional
+            A list of VectorField objects, Sage vectors, or plain lists.
+            If ``None``, uses ``self.minimal_generators()``.
+
+        Returns
+        -------
+        list
+            The coefficients `[g_0, \ldots, g_\ell]`.
+        """
+        if generators is not None:
+            m = self._to_matrix(generators)
+        else:
+            m = self._to_matrix(self.minimal_generators())
+        p = m.nrows()
+        ell = self.n
+
+        if p != ell + 1:
+            raise ValueError(f'saito_coefficients requires p = ell + 1, got p={p}, ell={ell}')
+
+        coeffs = []
+        for i in range(p):
+            rows = [j for j in range(p) if j != i]
+            det_val = (-1) ** i * m[rows, :].det()
+            g = det_val // self.Q
+            coeffs.append(g)
+
+        # verify relation
+        relation = sum(coeffs[i] * m[i] for i in range(p))
+        assert relation == 0, f"Relation check failed: {relation}"
+
+        return coeffs
+
+    def check_saito_criterion(self, generators=None, verbose=True):
+        r"""
+        Check the conditions of the generalized Saito criterion (Theorem 1 in saito.tex).
+
+        For `\ell + 1` generators, checks:
+        1. `g_{\ell+1} \in S_1 \setminus \{0\}` (i.e., degree 1 and nonzero)
+        2. `g_1, \ldots, g_\ell \in S_{>0}` have no non-trivial common divisor modulo `g_{\ell+1}`
+
+        Parameters
+        ----------
+        generators : list, optional
+            A list of VectorField objects, Sage vectors, or plain lists.
+            If ``None``, uses ``self.minimal_generators()``.
+
+        Returns
+        -------
+        dict with keys 'coefficients', 'is_spog_by_criterion', 'g_last_deg', 'common_divisor_mod'
+        """
+        coeffs = self.saito_coefficients(generators)
+        ell = self.n
+        g_last = coeffs[ell]
+        g_rest = coeffs[:ell]
+
+        g_last_deg = g_last.degree() if g_last != 0 else -1
+        cond1 = (g_last != 0 and g_last_deg == 1)
+
+        # Check: g_1,...,g_ell have no common divisor mod g_{ell+1}
+        # Compute gcd of g_rest modulo g_last
+        I_mod = ideal(g_last)
+        g_mod = [self.S(g).reduce(I_mod.groebner_basis()) for g in g_rest]
+        common = gcd(g_mod)
+        cond2 = (common.degree() == 0)  # common divisor is a constant
+
+        result = {
+            'coefficients': coeffs,
+            'is_spog_by_criterion': cond1 and cond2,
+            'g_last_deg': g_last_deg,
+            'common_divisor_mod': common,
+        }
+
+        if verbose:
+            print(f"g_{{ell+1}} = {coeffs[ell]}, degree = {g_last_deg}")
+            print(f"  Condition 1 (deg=1, nonzero): {cond1}")
+            for i, g in enumerate(g_rest):
+                print(f"  g_{i} = {g} (degree {g.degree() if g != 0 else -1})")
+            print(f"  gcd(g_0,...,g_{{ell-1}}) mod g_{{ell}} = {common}")
+            print(f"  Condition 2 (no common divisor mod g_{{ell}}): {cond2}")
+            print(f"  => SPOG by criterion: {cond1 and cond2}")
+
+        return result
+
     def determinant_ideal(self, verbose=False):
         m = matrix([g.v for g in self.minimal_generators()])
         I = []
@@ -689,200 +856,7 @@ def min_gen_arr(mat, verbose=True):
         print('Degree sequence:', degs)
     return VectorFieldModule(GEN_vec)
 
-def dehomogenise(A, G):
-    v1 = A.S.gens()
-    return [A.euler_complement(g, A.n - 1).subs({v1[A.n - 1]: 1}) for g in G]
 
-def affine_basis(A, G):
-    if not G:
-        return VectorFieldModule([])
-    if len(G[0]) == A.n - 1:
-        affine_fields = G if isinstance(G, VectorFieldModule) else VectorFieldModule(G)
-    else:
-        affine_fields = VectorFieldModule([vector(g[:A.n - 1]) for g in dehomogenise(A, G)])
-
-    return affine_fields.vector_basis().gens
-
-def fit_vf(A, Obs, mod_gens, verbose=True):
-    v1 = A.S.gens()
-    G = affine_basis(A, mod_gens)
-    if verbose:
-        print(f'Basis dimension: {len(G)}')
-
-    normalized_G = []
-    for i, vf in enumerate(G):
-        norm_factor = 1
-        try:
-            max_coeff = 0
-            for comp in vf:
-                coeffs = comp.coefficients()
-                if coeffs:
-                    comp_max = max(abs(c) for c in coeffs)
-                    max_coeff = max(max_coeff, comp_max)
-
-            if max_coeff > 0:
-                try:
-                    max_coeff_float = float(max_coeff)
-                    if not np.isfinite(max_coeff_float):
-                        vf = VectorField([comp / max_coeff for comp in vf])
-                    else:
-                        vf = VectorField([comp / max_coeff for comp in vf])
-                except (OverflowError, ValueError):
-                    vf = VectorField([comp / max_coeff for comp in vf])
-        except Exception:
-            pass
-        normalized_G.append(vf)
-
-    G = normalized_G
-
-    X_rows, Y = [], []
-    try:
-        for p, u in Obs.items():
-            try:
-                subs_q = {v1[i]: QQ(p[i]) for i in range(A.n - 1)}
-            except Exception:
-                subs_q = {v1[i]: RR(p[i]) for i in range(A.n - 1)}
-
-            M = []
-            for base_vf in G:
-                comps = []
-                for i in range(A.n - 1):
-                    val = base_vf[i].subs(subs_q)
-                    try:
-                        fv = float(val)
-                    except Exception:
-                        fv = RR(val)
-                        fv = float(fv)
-                    comps.append(fv)
-                M.append(comps)
-
-            M = np.array(M, dtype=np.float64)
-
-            if not np.all(np.isfinite(M)):
-                continue
-
-            for i in range(A.n - 1):
-                X_rows.append(M[:, i])
-            Y.append(np.array(u, dtype=np.float64))
-
-        if not X_rows:
-            raise ValueError("No valid observations after evaluation; check filtering or data.")
-
-        X = np.vstack(X_rows)
-        Y = np.vstack(Y).ravel()
-
-        x, _, _, _ = lstsq(X, Y)
-        res = float(np.sum((X.dot(x) - Y)**2))
-
-        derivation = (matrix([g.v for g in G]).transpose()) * vector(x.ravel())
-        return VectorField(derivation), res
-
-    except Exception as e:
-        raise ValueError(f"Error in fitting: {str(e)}")
-
-def fit_vorticity(A, Obs, mod_gens, verbose=True):
-    if A.n - 1 != 2:
-        raise NotImplementedError('vorticity fitting currently supports only 2D domains')
-
-    v1 = A.S.gens()
-    basis = affine_basis(A, mod_gens)
-    if verbose:
-        print(f'Basis dimension: {len(basis)}')
-
-    vort_basis = [vf.rot() for vf in basis]
-
-    normalized_vort_basis = []
-    normalized_basis = []
-    norm_factors = []
-    for i, vort_expr in enumerate(vort_basis):
-        norm_factor = 1
-        try:
-            coeffs = vort_expr.coefficients()
-            if coeffs:
-                max_coeff = max(abs(c) for c in coeffs)
-                if max_coeff > 0:
-                    try:
-                        max_coeff_float = float(max_coeff)
-                        if not np.isfinite(max_coeff_float):
-                            vort_expr = vort_expr / max_coeff
-                            norm_factor = max_coeff
-                        else:
-                            vort_expr = vort_expr / max_coeff
-                            norm_factor = max_coeff
-                    except (OverflowError, ValueError):
-                        vort_expr = vort_expr / max_coeff
-                        norm_factor = max_coeff
-        except Exception as e:
-            if verbose:
-                print(f"Vorticity basis[{i}] normalization failed: {e}")
-        normalized_vort_basis.append(vort_expr)
-        normalized_basis.append(basis[i] / norm_factor if norm_factor != 1 else basis[i])
-        norm_factors.append(norm_factor)
-
-    vort_basis = normalized_vort_basis
-    basis = normalized_basis
-
-    rows = []
-    rhs = []
-    for point, omega in Obs.items():
-        if len(point) != A.n - 1:
-            raise ValueError('each observation key must match the spatial dimension of the arrangement')
-        try:
-            subs_q = {v1[i]: QQ(point[i]) for i in range(A.n - 1)}
-        except Exception:
-            subs_q = {v1[i]: RR(point[i]) for i in range(A.n - 1)}
-        subs_q.setdefault(v1[A.n - 1], 1)
-
-        row_vals = []
-        finite_row = True
-        for vort_expr in vort_basis:
-            val = vort_expr.subs(subs_q)
-            try:
-                num = float(val)
-            except Exception:
-                try:
-                    num = float(RR(val))
-                except Exception:
-                    finite_row = False
-                    break
-            if not np.isfinite(num):
-                finite_row = False
-                break
-            row_vals.append(num)
-
-        if not finite_row:
-            continue
-
-        rows.append(np.array(row_vals, dtype=np.float64))
-        rhs.append(float(omega))
-
-    if not rows:
-        raise ValueError('no valid vorticity observations for fitting')
-
-    X = np.vstack(rows)
-    y = np.array(rhs, dtype=np.float64)
-
-    coeffs, _, _, _ = lstsq(X, y)
-    residual = float(np.sum((X.dot(coeffs) - y) ** 2))
-
-    derivation = (matrix([g.v for g in basis]).transpose()) * vector(coeffs)
-    return VectorField(derivation), residual
-
-
-def given_min_error(A, P, e0, verbose=True):
-    G = VectorFieldModule(A.minimal_generators().gens[1:])  # exclude Euler
-    k = G.gens[0].degree()
-    if verbose:
-        print(f'Starting with degree {k}')
-
-    while True:
-        mod_gens = G.graded_component(k).gens
-        u, err = fit_vf(A, P, mod_gens, verbose=verbose)
-        if err <= e0:
-            return u, err, k
-        k += 1
-        if verbose:
-            print(f'Trying degree {k}')
 
 HyperPlaneArr = HyperplaneArrangement
 
@@ -955,9 +929,36 @@ def harmonic(G):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(G).harmonic().gens
 
+
+def dehomogenise(A, G):
+    from .vector_field import VectorFieldModule
+    if isinstance(G, VectorFieldModule):
+        return G.dehomogenise().gens
+    return VectorFieldModule(G).dehomogenise().gens
+    
+def affine_basis(A, G):
+    from .vector_field import VectorFieldModule
+    if isinstance(G, VectorFieldModule):
+        return G.affine_basis().gens
+    return VectorFieldModule(G).affine_basis().gens
+    
+def fit_vf(A, Obs, mod_gens, verbose=True):
+    from .fit import fit_vf as _fit_vf
+    return _fit_vf(A, Obs, mod_gens, verbose)
+    
+def fit_vorticity(A, Obs, mod_gens, verbose=True):
+    from .fit import fit_vorticity as _fit_vorticity
+    return _fit_vorticity(A, Obs, mod_gens, verbose)
+    
+def given_min_error(A, P, e0, verbose=True):
+    from .fit import given_min_error as _given_min_error
+    return _given_min_error(A, P, e0, verbose)
+
 __all__ = [
     'HyperplaneArrangement',
     'HyperPlaneArr',
+    'VectorField',
+    'VectorFieldModule',
     'degseq',
     'is_distinct_planes',
     'remove_duplicate_planes',

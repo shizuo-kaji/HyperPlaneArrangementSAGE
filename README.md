@@ -12,6 +12,7 @@ JC was supported by the China Scholarship Council.
 This repository provides tools for:
 
 - Analyzing hyperplane arrangements with a particular focus on logarithmic derivation modules
+- Working with homogeneous bounded-degree modules of polynomial vector fields
 - Fitting polynomial vector fields to velocity and vorticity data on polyhedral domains using least-squares methods
 
 ## Prerequisites
@@ -30,23 +31,31 @@ sage -pip install -e .
 
 ## Repository Layout
 
-### Core Package
+### Core Package `src/hyperplane_arrangements/`
 
+The library employs an object-oriented design handling vector fields independently from arrangements:
+
+- **`arrangement.py`**: Contains the core `HyperplaneArrangement` class.
+- **`vector_field.py`**: Houses the `VectorField` and `VectorFieldModule` classes, encapsulating differential operations (div, rot, laplacian) and subspace operations (graded components, free resolutions, dehomogenization).
+- **`fit.py`**: Dedicated module and algorithms for fitting vector fields and vorticities against observations.
+- **`utils.py`**: Mathematical helpers and utility functions.
+- **`tangential_field.py`**: Synthetic `ConvexPolygonFlow` generator for tangential vector-field samples.
+
+Basic Usage:
 ```python
 from hyperplane_arrangements import *
 A = HyperPlaneArr([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
-print(gendic(A.minimal_generators()))
+
+# Get the vector field module containing minimal generators
+mod = A.minimal_generators()
+
+# Inspect degrees and free resolution
+print(mod.gendic())
 print(A.free_resolution())
-A.plot(A.minimal_generators()[1], xlim=(-2, 2), ylim=(-2, 2))
+
+# Work natively with VectorField objects
+A.plot(mod.gens[1], xlim=(-2, 2), ylim=(-2, 2))
 ```
-For more details, see the Jupyter Notebooks below:
-
-- **`src/hyperplane_arrangements/arrangement.py`**
-  - Implementation of `HyperplaneArrangement` class
-
-- **`src/hyperplane_arrangements/tangential_field.py`**
-  - Synthetic `ConvexPolygonFlow` generator
-  - Produces tangential vector-field samples, vorticity, and divergence
 
 ## Important: Jupyter Kernel
 
@@ -72,3 +81,7 @@ See Jupyter Notebooks.
 - **`vector_field_reconstruction.ipynb`**
   - Demonstrates vector field reconstruction from synthetic data
   - Junyan Chu, Shizuo Kaji: Polynomial Interpolation of a Vector Field on a Convex Polygonal Domain, arXiv:2602.01803
+
+## TODO
+- [ ] Update Jupyter notebooks (`LogarithmicVectorFieldsOfArrangements.ipynb`, `vector_field_reconstruction.ipynb`, etc.) to directly integrate and leverage the latest `VectorField` and `VectorFieldModule` unified API instead of relying on legacy shim functions.
+- [ ] Clean up and resolve legacy dependencies and any unused shim functions in the core package once notebooks are upgraded.
