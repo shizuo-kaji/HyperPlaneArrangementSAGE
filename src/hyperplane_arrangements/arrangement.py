@@ -193,12 +193,16 @@ class HyperplaneArrangement(SageObject):
             raise ValueError('convex hull has no supporting planes')
 
         rows = []
+        seen = set()
         for eq in hull.equations:
             coeffs = [HyperplaneArrangement._coerce_vertex_scalar(val, base_field, max_denominator)
                       for val in eq[:-1]]
             coeffs.append(HyperplaneArrangement._coerce_vertex_scalar(eq[-1], base_field, max_denominator))
             coeffs = HyperplaneArrangement._normalise_plane_row(coeffs, base_field)
-            rows.append(coeffs)
+            key = tuple(coeffs)
+            if key not in seen:
+                seen.add(key)
+                rows.append(coeffs)
 
         if not rows:
             raise ValueError('no hyperplanes constructed from vertices')

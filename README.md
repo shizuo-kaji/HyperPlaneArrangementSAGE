@@ -81,7 +81,3 @@ See Jupyter Notebooks.
 - **`vector_field_reconstruction.ipynb`**
   - Demonstrates vector field reconstruction from synthetic data
   - Junyan Chu, Shizuo Kaji: Polynomial Interpolation of a Vector Field on a Convex Polygonal Domain, arXiv:2602.01803
-
-## TODO
-- [ ] Update Jupyter notebooks (`LogarithmicVectorFieldsOfArrangements.ipynb`, `vector_field_reconstruction.ipynb`, etc.) to directly integrate and leverage the latest `VectorField` and `VectorFieldModule` unified API instead of relying on legacy shim functions.
-- [ ] Clean up and resolve legacy dependencies and any unused shim functions in the core package once notebooks are upgraded.
