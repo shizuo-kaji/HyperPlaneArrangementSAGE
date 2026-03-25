@@ -54,6 +54,9 @@ class VectorField(SageObject):
 
     def __rmul__(self, other):
         return VectorField(other * self._u, self.S)
+
+    def __truediv__(self, other):
+        return VectorField(self._u / other, self.S)
         
     def _repr_(self):
         return repr(self._u)

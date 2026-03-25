@@ -129,7 +129,7 @@ def fit_vorticity(A, Obs, mod_gens, verbose=True):
             if verbose:
                 print(f"Vorticity basis[{i}] normalization failed: {e}")
         normalized_vort_basis.append(vort_expr)
-        normalized_basis.append(basis[i] / norm_factor if norm_factor != 1 else basis[i])
+        normalized_basis.append(basis[i] * (1 / norm_factor) if norm_factor != 1 else basis[i])
         norm_factors.append(norm_factor)
 
     vort_basis = normalized_vort_basis
