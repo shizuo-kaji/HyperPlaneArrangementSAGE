@@ -2,6 +2,7 @@ import pytest
 from sage.all import matrix, QQ, GF, vector, PolynomialRing, identity_matrix
 from hyperplane_arrangements.arrangement import (
     HyperplaneArrangement, basis_da, min_gen_arr, min_gen_arr_linear, degseq,
+    constructive_closure, intersection_lattice, minimal_constructive_subset, s_invariant, s,
 )
 from hyperplane_arrangements.utils import coord_vec
 
@@ -54,6 +55,60 @@ def test_linear_forms():
     assert forms[1] == A.v[1]
     assert forms[2] == A.v[0] + A.v[1]
 
+def test_constructive_closure_and_s_invariant():
+    A = HyperplaneArrangement(matrix(QQ, [
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+        [1, -1, 0],
+    ]))
+
+    closure, closure_indices = constructive_closure(A, [0, 1, 2], return_indices=True)
+    assert closure_indices == (0, 1, 2, 3)
+    assert closure.num_planes == 4
+
+    B, indices = minimal_constructive_subset(A, return_indices=True)
+    assert indices == (0, 1, 2)
+    assert B.num_planes == 3
+    assert A.constructively_generates(indices)
+    assert s_invariant(A) == 3
+    assert s(A) == 3
+
+def test_constructive_closure_is_trivial_in_rank_two():
+    A = HyperplaneArrangement(matrix(QQ, [[1, 0], [0, 1], [1, 1]]))
+    B, indices = minimal_constructive_subset(A, return_indices=True)
+    assert indices == (0, 1, 2)
+    assert B.num_planes == 3
+    assert A.constructive_closure_indices([0, 1]) == (0, 1)
+    assert A.s_invariant() == 3
+
+
+def test_intersection_lattice_basic_central_arrangement():
+    A = HyperplaneArrangement(matrix(QQ, [[1, 0], [0, 1], [1, 1]]))
+    L = A.intersection_lattice()
+
+    expected_elements = {
+        tuple(),
+        (0,),
+        (1,),
+        (2,),
+        (0, 1, 2),
+    }
+
+    assert set(L) == expected_elements
+    assert L.bottom() == tuple()
+    assert L.top() == (0, 1, 2)
+    assert L.is_lequal((0,), (0, 1, 2))
+    assert not L.is_lequal((0, 1, 2), (0,))
+
+
+def test_intersection_lattice_shim_function():
+    A = HyperplaneArrangement(matrix(QQ, [[1, 0], [0, 1], [1, 1]]))
+    direct = A.intersection_lattice()
+    shimmed = intersection_lattice(A)
+
+    assert set(direct) == set(shimmed)
+
 def test_dimension_formula():
     mat = matrix(QQ, [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
     A = HyperplaneArrangement(mat)
@@ -62,7 +117,7 @@ def test_dimension_formula():
 
 def test_ntf2_dimension_4_arrangements():
     from hyperplane_arrangements.utils import coord_vec
-    
+
     mat1 = [[ 1,  0,  0,  0],
             [ 0,  1,  0,  0],
             [ 0,  0,  1,  0],
@@ -83,7 +138,7 @@ def test_ntf2_dimension_4_arrangements():
     A2 = HyperplaneArrangement(matrix(QQ, mat2))
     assert A2.num_planes == 10
     assert A2.degs() == [1, 3, 3, 3]
-    
+
     B2 = A2.deletion([1,2])
     assert B2.num_planes == 8
     assert B2.degs() == [1, 3, 3, 3, 3, 3, 3]
@@ -94,15 +149,15 @@ def test_ntf2_dimension_4_arrangements():
     A3 = HyperplaneArrangement(matrix(QQ, mat3))
     assert A3.num_planes == 12
     assert A3.degs() == [1, 3, 4, 4]
-    
+
     B3_1 = A3.deletion([0,1])
     assert B3_1.num_planes == 10
     assert B3_1.degs() == [1, 3, 3, 4, 4]
-    
+
     B3_2 = A3.deletion([0,7])
     assert B3_2.num_planes == 10
     assert B3_2.degs() == [1, 3, 4, 4, 4, 5]
-    
+
     B3_3 = A3.deletion([1,9])
     assert B3_3.num_planes == 10
     assert B3_3.degs() == [1, 3, 4, 4, 4, 4]

@@ -324,6 +324,109 @@ class HyperplaneArrangement(SageObject):
     def deletion(self, L):
         return HyperplaneArrangement(self.mat.delete_rows(L))
 
+    def _coerce_hyperplane_indices(self, subset) -> Tuple[int, ...]:
+        if isinstance(subset, (int, Integer)):
+            indices = [int(subset)]
+        else:
+            try:
+                indices = [int(i) for i in subset]
+            except TypeError as exc:
+                raise TypeError('subset must be an int or an iterable of ints.') from exc
+
+        normalised = []
+        seen = set()
+        for index in indices:
+            if index < 0 or index >= self.num_planes:
+                raise IndexError(f'hyperplane index {index} is out of range for {self.num_planes} planes.')
+            if index not in seen:
+                normalised.append(index)
+                seen.add(index)
+        return tuple(sorted(normalised))
+
+    def _subarrangement_from_indices(self, indices: Iterable[int]):
+        rows = list(indices)
+        multiplicity = None if self.multiplicity is None else [self.multiplicity[i] for i in rows]
+        if not rows:
+            return HyperplaneArrangement(matrix(self.K, 0, self.n), multiplicity=multiplicity)
+        return HyperplaneArrangement(self.mat[rows, :], multiplicity=multiplicity)
+
+    @cached_method
+    def _hyperplanes_containing_rank_n_minus_1_flat(self, indices: Tuple[int, ...]) -> Tuple[int, ...]:
+        if len(indices) != self.n - 1:
+            raise ValueError(f'expected {self.n - 1} indices, got {len(indices)}.')
+
+        submat = self.mat[list(indices), :]
+        if submat.rank() != self.n - 1:
+            return tuple()
+
+        row_space = submat.row_space()
+        return tuple(i for i, row in enumerate(self.mat.rows()) if row in row_space)
+
+    def constructive_closure_indices(self, subset) -> Tuple[int, ...]:
+        r"""Return the indices of the constructive closure ``\langle B \rangle_A``."""
+        current = set(self._coerce_hyperplane_indices(subset))
+        target_rank = self.n - 1
+
+        if target_rank <= 0 or len(current) < target_rank:
+            return tuple(sorted(current))
+
+        while True:
+            snapshot = tuple(sorted(current))
+            updated = set(current)
+            for flat_indices in itertools.combinations(snapshot, target_rank):
+                updated.update(self._hyperplanes_containing_rank_n_minus_1_flat(flat_indices))
+                if len(updated) == self.num_planes:
+                    return tuple(range(self.num_planes))
+            if updated == current:
+                return tuple(sorted(current))
+            current = updated
+
+    def constructive_closure(self, subset, return_indices: bool = False):
+        r"""Return the constructive closure ``\langle B \rangle_A`` as a subarrangement."""
+        indices = self.constructive_closure_indices(subset)
+        closure = self._subarrangement_from_indices(indices)
+        if return_indices:
+            return closure, indices
+        return closure
+
+    def constructively_generates(self, subset) -> bool:
+        r"""Check whether ``subset`` constructively generates the full arrangement."""
+        return self.constructive_closure_indices(subset) == tuple(range(self.num_planes))
+
+    def minimal_constructive_subset_indices(self, max_size: Optional[int] = None) -> Tuple[int, ...]:
+        r"""Return a minimum-cardinality subset ``B`` with ``A = \langle B \rangle_A``."""
+        full_indices = tuple(range(self.num_planes))
+        if self.num_planes == 0:
+            return full_indices
+
+        if self.n <= 2 or self.num_planes < self.n - 1:
+            min_size = self.num_planes
+        else:
+            min_size = self.n - 1
+
+        upper = self.num_planes if max_size is None else min(int(max_size), self.num_planes)
+        if upper < min_size:
+            raise ValueError(f'no constructively generating subset can have size <= {upper}.')
+
+        for size in range(min_size, upper + 1):
+            for subset in itertools.combinations(full_indices, size):
+                if self.constructive_closure_indices(subset) == full_indices:
+                    return subset
+
+        raise ValueError(f'no constructively generating subset found up to size {upper}.')
+
+    def minimal_constructive_subset(self, max_size: Optional[int] = None, return_indices: bool = False):
+        r"""Return a minimum-cardinality constructive generating subarrangement."""
+        indices = self.minimal_constructive_subset_indices(max_size=max_size)
+        subset = self._subarrangement_from_indices(indices)
+        if return_indices:
+            return subset, indices
+        return subset
+
+    def s_invariant(self, max_size: Optional[int] = None) -> int:
+        r"""Return ``s(A)``, the minimum size of a constructive generating subset."""
+        return len(self.minimal_constructive_subset_indices(max_size=max_size))
+
     def addition(self, mat):
         if isinstance(mat, list):
             return HyperplaneArrangement(self.mat.stack(vector(mat)))
@@ -331,7 +434,57 @@ class HyperplaneArrangement(SageObject):
             return HyperplaneArrangement(self.mat.stack(mat))
 
     def intersection_lattice(self):
-        return None
+        r"""
+        Return the intersection lattice of the arrangement as a Sage poset.
+
+        Each lattice element is represented by a tuple of hyperplane indices:
+        the indices of hyperplanes containing the corresponding flat.
+        The order is set inclusion on these index tuples, which corresponds to
+        reverse inclusion on geometric intersections.
+        """
+        from sage.combinat.posets.posets import Poset
+
+        if self.num_planes == 0:
+            return Poset([tuple()])
+
+        rows = list(self.mat.rows())
+        closure_cache = {tuple(): tuple()}
+        rank_cache = {tuple(): 0}
+
+        def closure(indices):
+            key = tuple(sorted(indices))
+            if key in closure_cache:
+                return closure_cache[key]
+
+            submat = self.mat[list(key), :]
+            rk = submat.rank()
+            if rk == 0:
+                cl = tuple()
+            else:
+                rs = submat.row_space()
+                cl = tuple(i for i, row in enumerate(rows) if row in rs)
+
+            closure_cache[key] = cl
+            rank_cache[cl] = rk
+            return cl
+
+        flats = {tuple()}
+        queue = [tuple()]
+
+        while queue:
+            current = queue.pop()
+            current_set = set(current)
+            for i in range(self.num_planes):
+                if i in current_set:
+                    continue
+                nxt = closure(current + (i,))
+                if nxt not in flats:
+                    flats.add(nxt)
+                    queue.append(nxt)
+
+        # Keep a deterministic order; rank is codimension in this representation.
+        elements = tuple(sorted(flats, key=lambda f: (rank_cache.get(f, len(f)), len(f), f)))
+        return Poset((elements, lambda a, b: set(a).issubset(set(b))))
 
     @cached_method
     def is_spog(self) -> Union[bool, List[int]]:
@@ -641,7 +794,7 @@ class HyperplaneArrangement(SageObject):
             py = np.linspace(ylim[0], ylim[1], ny)
             xv, yv = np.meshgrid(px, py)
             vx, vy = [], []
-            
+
             u_v = u.v if isinstance(u, VectorField) else u
 
             if len(u_v) == 3:
@@ -872,15 +1025,15 @@ def vector_to_derivative(u):
 def derivative_to_vector(u):
     from .vector_field import VectorField
     return VectorField.from_derivative(u).v
-    
+
 def div(u, S):
     from .vector_field import VectorField
     return VectorField(u, S).div()
-    
+
 def rot(u, S):
     from .vector_field import VectorField
     return VectorField(u, S).rot()
-    
+
 def laplacian(u, S):
     from .vector_field import VectorField
     return VectorField(u, S).laplacian().v
@@ -892,31 +1045,31 @@ def degseq(MG):
 def is_s_indep(MG):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(MG).is_s_indep()
-    
+
 def saito(MG):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(MG).saito()
-    
+
 def vector_basis(G):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(G).vector_basis().gens
-    
+
 def vector_to_flatten(U, Sk_dic, n=0):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(U).to_flatten(Sk_dic, n)
-    
+
 def graded_component(G, deg):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(G).graded_component(deg).gens
-    
+
 def gendic(generators):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(generators).gendic()
-    
+
 def minimal_generating_set(G):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(G).minimal_generating_set().gens
-    
+
 def image_lambda(V, n):
     from .vector_field import VectorFieldModule
     return VectorFieldModule(V).image_lambda(n)
@@ -939,24 +1092,39 @@ def dehomogenise(A, G):
     if isinstance(G, VectorFieldModule):
         return G.dehomogenise().gens
     return VectorFieldModule(G).dehomogenise().gens
-    
+
 def affine_basis(A, G):
     from .vector_field import VectorFieldModule
     if isinstance(G, VectorFieldModule):
         return G.affine_basis().gens
     return VectorFieldModule(G).affine_basis().gens
-    
+
 def fit_vf(A, Obs, mod_gens, verbose=True):
     from .fit import fit_vf as _fit_vf
     return _fit_vf(A, Obs, mod_gens, verbose)
-    
+
 def fit_vorticity(A, Obs, mod_gens, verbose=True):
     from .fit import fit_vorticity as _fit_vorticity
     return _fit_vorticity(A, Obs, mod_gens, verbose)
-    
+
 def given_min_error(A, P, e0, verbose=True):
     from .fit import given_min_error as _given_min_error
     return _given_min_error(A, P, e0, verbose)
+
+def constructive_closure(A, subset, return_indices=False):
+    return A.constructive_closure(subset, return_indices=return_indices)
+
+def intersection_lattice(A):
+    return A.intersection_lattice()
+
+def minimal_constructive_subset(A, max_size=None, return_indices=False):
+    return A.minimal_constructive_subset(max_size=max_size, return_indices=return_indices)
+
+def s_invariant(A, max_size=None):
+    return A.s_invariant(max_size=max_size)
+
+def s(A, max_size=None):
+    return A.s_invariant(max_size=max_size)
 
 __all__ = [
     'HyperplaneArrangement',
@@ -991,6 +1159,11 @@ __all__ = [
     'fit_vf',
     'fit_vorticity',
     'given_min_error',
+    'constructive_closure',
+    'intersection_lattice',
+    'minimal_constructive_subset',
+    's_invariant',
+    's',
     'div',
     'rot',
     'laplacian',
