@@ -17,11 +17,72 @@ This repository provides tools for:
 
 ## Prerequisites
 
-To use this module, you need to have access to SageMath. You can:
-1. [Install SageMath locally](https://www.sagemath.org/download.html) on your computer.
-2. Use an online service such as [CoCalc](https://cocalc.com/), which provides an environment to run SageMath.
+To use this module, you need SageMath with Jupyter support.
 
-## Installation
+### macOS (recommended: Sage binary app)
+
+1. Download SageMath for macOS from the [official download page](https://www.sagemath.org/download.html).
+2. Open the downloaded `.dmg` and drag the Sage app to `Applications`.
+3. Start Sage once from `Applications` (this completes first-run setup).
+4. Open Terminal and check Sage is available:
+
+```bash
+/Applications/SageMath.app/Contents/Resources/sage/sage --version
+```
+
+5. Install/enable Jupyter inside Sage's Python environment:
+
+```bash
+sage -pip install --upgrade jupyterlab notebook ipykernel
+sage --python -m ipykernel install --user --name sagemath --display-name "SageMath"
+```
+
+6. Launch Jupyter with Sage:
+
+```bash
+sage -n jupyter
+```
+
+### Windows (recommended: WSL2 + Linux Sage)
+
+SageMath is most reliable on Windows via WSL2.
+
+1. Install WSL2 (PowerShell as Administrator):
+
+```powershell
+wsl --install
+```
+
+2. Reboot if prompted, then open Ubuntu from the Start menu and create your Linux user.
+3. In Ubuntu, install Sage and Jupyter:
+
+```bash
+sudo apt update
+sudo apt install -y sagemath python3-pip
+sage -pip install --upgrade jupyterlab notebook ipykernel
+sage --python -m ipykernel install --user --name sagemath --display-name "SageMath"
+```
+
+4. Verify installation:
+
+```bash
+sage --version
+```
+
+5. Start Jupyter from Ubuntu:
+
+```bash
+sage -n jupyter --no-browser --ip=0.0.0.0 --port=8888
+```
+
+Then open the shown URL in your Windows browser.
+
+### Verify notebook kernel
+
+In JupyterLab or VS Code, select the kernel named **SageMath** for this project notebooks.
+If you get `ModuleNotFoundError: No module named 'sage'`, the notebook is running on the wrong kernel.
+
+## (optional) Installation of the package
 
 Install the package into your Sage environment using:
 
