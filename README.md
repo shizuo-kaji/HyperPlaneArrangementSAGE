@@ -106,8 +106,6 @@ The notebooks in `notebooks/` also add the repository `src/` directory to `sys.p
     - An optional C++ solver is provided in `src/hyperplane_arrangements/cpp/minimal_region/`. It is automatically compiled during package installation if a C++ compiler (`make` and `c++`) is present. The `CppGreedyCutAllSolver` wrapper seamlessly detects and uses it.
 - `notebooks/`: active Jupyter notebooks.
 - `tests/`: pytest suite for the Sage package.
-- `paper/`: LaTeX manuscript and bibliography.
-- `old/`: archived notebooks and historical experiment files.
 
 Basic usage:
 
@@ -126,8 +124,6 @@ print(A.free_resolution())
 # Work natively with VectorField objects
 A.plot(mod.gens[1], xlim=(-2, 2), ylim=(-2, 2))
 ```
-
-The legacy alias `HyperPlaneArr` remains available for older notebooks.
 
 ## Testing
 
