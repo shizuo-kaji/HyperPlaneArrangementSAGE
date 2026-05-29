@@ -37,9 +37,10 @@ sage -pip install --upgrade jupyterlab notebook ipykernel
 sage --python -m ipykernel install --user --name sagemath --display-name "SageMath"
 ```
 
-6. Launch Jupyter with Sage:
+6. Launch Jupyter with Sage from the repository root:
 
 ```bash
+cd /path/to/HyperplaneArrangement
 sage -n jupyter
 ```
 
@@ -69,9 +70,10 @@ sage --python -m ipykernel install --user --name sagemath --display-name "SageMa
 sage --version
 ```
 
-5. Start Jupyter from Ubuntu:
+5. Start Jupyter from the repository root:
 
 ```bash
+cd /path/to/HyperplaneArrangement
 sage -n jupyter --no-browser --ip=0.0.0.0 --port=8888
 ```
 
@@ -82,30 +84,37 @@ Then open the shown URL in your Windows browser.
 In JupyterLab or VS Code, select the kernel named **SageMath** for this project notebooks.
 If you get `ModuleNotFoundError: No module named 'sage'`, the notebook is running on the wrong kernel.
 
-## (optional) Installation of the package
+## Development Installation
 
-Install the package into your Sage environment using:
+Install the package into the active Sage environment:
 
 ```bash
 sage -pip install -e .
 ```
 
+The notebooks in `notebooks/` also add the repository `src/` directory to `sys.path` automatically when run from inside the repository. The editable install is still recommended for normal development and for opening notebooks from external tools.
+
 ## Repository Layout
 
-### Core Package `src/hyperplane_arrangements/`
+- `src/hyperplane_arrangements/`: Sage package source.
+  - `arrangement.py`: `HyperplaneArrangement` core logic.
+  - `vector_field.py`: `VectorField` and `VectorFieldModule` abstractions for derivatives, divergence, rotation, Laplacian, graded components, dehomogenization, and module operations.
+  - `fit.py`: vector-field and vorticity fitting routines.
+  - `utils.py`: helper functions without class-level dependencies.
+  - `tangential_field.py`: synthetic `ConvexPolygonFlow` and tangential field generation.
+  - `minimal_region.py`: minimal region plane cut search and generator logic.
+    - An optional C++ solver is provided in `src/hyperplane_arrangements/cpp/minimal_region/`. It is automatically compiled during package installation if a C++ compiler (`make` and `c++`) is present. The `CppGreedyCutAllSolver` wrapper seamlessly detects and uses it.
+- `notebooks/`: active Jupyter notebooks.
+- `tests/`: pytest suite for the Sage package.
+- `paper/`: LaTeX manuscript and bibliography.
+- `old/`: archived notebooks and historical experiment files.
 
-The library employs an object-oriented design handling vector fields independently from arrangements:
+Basic usage:
 
-- **`arrangement.py`**: Contains the core `HyperplaneArrangement` class.
-- **`vector_field.py`**: Houses the `VectorField` and `VectorFieldModule` classes, encapsulating differential operations (div, rot, laplacian) and subspace operations (graded components, free resolutions, dehomogenization).
-- **`fit.py`**: Dedicated module and algorithms for fitting vector fields and vorticities against observations.
-- **`utils.py`**: Mathematical helpers and utility functions.
-- **`tangential_field.py`**: Synthetic `ConvexPolygonFlow` generator for tangential vector-field samples.
-
-Basic Usage:
 ```python
-from hyperplane_arrangements import *
-A = HyperPlaneArr([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
+from hyperplane_arrangements import HyperplaneArrangement
+
+A = HyperplaneArrangement([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
 
 # Get the vector field module containing minimal generators
 mod = A.minimal_generators()
@@ -116,6 +125,16 @@ print(A.free_resolution())
 
 # Work natively with VectorField objects
 A.plot(mod.gens[1], xlim=(-2, 2), ylim=(-2, 2))
+```
+
+The legacy alias `HyperPlaneArr` remains available for older notebooks.
+
+## Testing
+
+Inside a Sage-enabled environment, run:
+
+```bash
+PYTHONPATH=src:$PYTHONPATH pytest tests/
 ```
 
 ## Important: Jupyter Kernel
@@ -130,15 +149,31 @@ If you see `ModuleNotFoundError: No module named 'sage'`, switch the kernel to S
 
 ## Quick Start Example
 
-See Jupyter Notebooks.
+See the active notebooks under `notebooks/`:
 
-- **`LogarithmicVectorFieldsOfArrangements.ipynb`**
+- **`notebooks/LogarithmicVectorFieldsOfArrangements.ipynb`**
   - Demonstrates usage of the logarithmic derivation module functions
 
-- **`Examples_NTF-2.ipynb`**
+- **`notebooks/Examples_NTF-2.ipynb`**
   - Examples in Chu, Junyan. Free resolution of the logarithmic derivation modules of close to free arrangements. J Algebr Comb 61, 26 (2025).
   https://doi.org/10.1007/s10801-025-01394-7.
 
-- **`vector_field_reconstruction.ipynb`**
+- **`notebooks/vector_field_reconstruction.ipynb`**
   - Demonstrates vector field reconstruction from synthetic data
   - Junyan Chu, Shizuo Kaji: Polynomial Interpolation of a Vector Field on a Convex Polygonal Domain, arXiv:2602.01803
+
+- **`notebooks/vector_field_reconstruction_3d.ipynb`**
+  - Extends the reconstruction workflow to three-dimensional examples.
+
+- **`notebooks/Saito_criterion_examples.ipynb`**
+  - Integrated generalized Saito criterion examples, including generic determinant-ideal experiments.
+
+- **`notebooks/B2_multi_arrangement.ipynb`**
+  - Multi-arrangement examples.
+
+- **`notebooks/constructive_closure_demo.ipynb`**
+  - Constructive closure examples and visualizations.
+
+- **`notebooks/MinimalRegionPlaneCut.ipynb`**
+  - Minimal region plane cut solver.
+  - Generates exact reachable count tuples for minimal regions.

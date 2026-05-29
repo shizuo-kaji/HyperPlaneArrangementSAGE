@@ -45,7 +45,7 @@ from .utils import (
     exponent_to_polynomial,
     coef_map,
     module_intersection,
-    coord_vec,
+    coordinate_vectors,
     create_generic_arrangement,
 )
 from .vector_field import VectorField, VectorFieldModule
@@ -114,6 +114,39 @@ class HyperplaneArrangement(SageObject):
         self.multiplicity = multiplicity
         self.num_planes = self.mat.nrows() # number of hyperplanes in the arrangement
 
+    @classmethod
+    def cone_of_lines(cls, normals, lines_by_dir, base_field=QQ):
+        r"""Construct the central cone ``coning(A)`` of a 2D affine line
+        arrangement as a rank-3 :class:`HyperplaneArrangement`.
+
+        The affine arrangement is given in the pure-Python representation used
+        by :mod:`hyperplane_arrangements.minimal_region`: ``normals`` is a list
+        of integer direction vectors ``(a, b)`` and ``lines_by_dir[i]`` lists
+        the offsets ``c`` of the lines ``a*x + b*y = c`` of direction
+        ``normals[i]``.  Each such line cones to the plane ``a*x + b*y - c*z = 0``
+        (note the sign: the offset sits on the right-hand side), and the line at
+        infinity ``z = 0`` is appended.
+
+        For a free affine arrangement the cone is free with exponents
+        ``(1, d_1, d_2)`` -- recoverable via :meth:`degrees` -- which is the
+        Yoshinaga setting ``chamber(A) = (1 + d_1)(1 + d_2)``.
+        """
+        normals = list(normals)
+        lines_by_dir = list(lines_by_dir)
+        if len(normals) != len(lines_by_dir):
+            raise ValueError('normals and lines_by_dir must have the same length')
+        rows = []
+        for (a, b), offsets in zip(normals, lines_by_dir):
+            for c in offsets:
+                cc = Fraction(c)
+                rows.append([
+                    base_field(int(a)),
+                    base_field(int(b)),
+                    base_field(-cc.numerator) / base_field(cc.denominator),
+                ])
+        rows.append([base_field(0), base_field(0), base_field(1)])  # H_infty: z = 0
+        return cls(matrix(base_field, rows))
+
     @cached_method
     def euler(self):
         return VectorField(vector(self.v), self.S)
@@ -147,12 +180,12 @@ class HyperplaneArrangement(SageObject):
         return ZZ(dim)
 
     @cached_method
-    def degs(self):
-        return self.minimal_generators().degs()
+    def degrees(self):
+        return self.minimal_generators().degrees()
 
     @property
     def is_free(self):
-        return len(self.degs()) == self.n
+        return len(self.degrees()) == self.n
 
     @cached_method
     def linear_forms(self):
@@ -268,7 +301,7 @@ class HyperplaneArrangement(SageObject):
             RM = Sequence([module_elem(S1, (alpha.derivative(self.v[j]),))
                            for j in range(self.n)] + [module_elem(S1, (alpha**m,))])
             M.append(matrix([u[:-1] for u in syz(RM)]))
-        return list(module_intersection(M))
+        return VectorFieldModule(list(module_intersection(M)))
 
     def free_resolution(self):
         M = self.minimal_generators()[0].v.parent()
@@ -548,7 +581,7 @@ class HyperplaneArrangement(SageObject):
                     except Exception:
                         continue
                     if B.is_free:
-                        print("plane: ", vector(plane), "degrees: ", B.degs())
+                        print("plane: ", vector(plane), "degrees: ", B.degrees())
                         found = True
                         break
         if not found:
@@ -628,25 +661,39 @@ class HyperplaneArrangement(SageObject):
                 rows.append(vector(g))
         return matrix(rows)
 
-    def saito_coefficients(self, generators=None):
+    def saito_coefficients(self, generators=None, *, as_dict=False, signed=False):
         r"""
-        For the SPOG case (`p = \ell + 1`), compute the simplified Saito coefficients.
+        Compute scaled maximal minors of a logarithmic derivation matrix.
 
-        Returns a list `[g_0, g_1, \ldots, g_\ell]` where
-        `\Delta_i = (-1)^i \det(M_{[p] \setminus \{i\}}) = g_i \cdot Q`.
+        For a list ``G`` of ``p >= ell`` derivations, this computes
+        ``det(M_I[G]) / Q(A)`` for every ``ell``-subset ``I`` of rows, in
+        the sense of Definition ``def:scaled-minor-ideal``.
 
-        Also verifies the relation `\sum g_i \theta_i = 0`.
+        For the historical SPOG case ``p = ell + 1``, the default return
+        value remains the signed cofactor list
+        ``[g_0, g_1, ..., g_ell]`` satisfying
+        ``sum_i g_i theta_i = 0``.  Pass ``as_dict=True`` to get the
+        definition-level dictionary for this case too.
 
         Parameters
         ----------
         generators : list, optional
             A list of VectorField objects, Sage vectors, or plain lists.
             If ``None``, uses ``self.minimal_generators()``.
+        as_dict : bool
+            If ``True``, return a dictionary mapping each row subset
+            ``I`` to ``det(M_I) / Q(A)``.  If ``False`` and ``p=ell+1``,
+            return the signed cofactor list.
+        signed : bool
+            Only used with ``as_dict=True``.  If ``True``, multiply each
+            determinant by the same subset sign used by ``delta_I``.
+            Signs are immaterial for the scaled minor ideal.
 
         Returns
         -------
-        list
-            The coefficients `[g_0, \ldots, g_\ell]`.
+        list or dict
+            A signed list in the ``p=ell+1`` default case; otherwise a
+            dictionary ``{I: det(M_I)/Q(A)}``.
         """
         if generators is not None:
             m = self._to_matrix(generators)
@@ -655,70 +702,479 @@ class HyperplaneArrangement(SageObject):
         p = m.nrows()
         ell = self.n
 
-        if p != ell + 1:
-            raise ValueError(f'saito_coefficients requires p = ell + 1, got p={p}, ell={ell}')
+        if p < ell:
+            raise ValueError(f'saito_coefficients requires p >= ell, got p={p}, ell={ell}')
 
-        coeffs = []
-        for i in range(p):
-            rows = [j for j in range(p) if j != i]
-            det_val = (-1) ** i * m[rows, :].det()
+        if p == ell + 1 and not as_dict:
+            coeffs = []
+            for i in range(p):
+                rows = [j for j in range(p) if j != i]
+                det_val = (-1) ** i * m[rows, :].det()
+                g = det_val // self.Q
+                coeffs.append(g)
+
+            # Verify the cofactor relation in the ell+1 case.
+            relation = sum(coeffs[i] * m[i] for i in range(p))
+            assert relation == 0, f"Relation check failed: {relation}"
+
+            return coeffs
+
+        coeffs = {}
+        for sub in itertools.combinations(range(p), ell):
+            det_val = m[list(sub), :].det()
+            if signed:
+                sign = (-1) ** sum(sub[k] - k for k in range(ell))
+                det_val = sign * det_val
             g = det_val // self.Q
-            coeffs.append(g)
-
-        # verify relation
-        relation = sum(coeffs[i] * m[i] for i in range(p))
-        assert relation == 0, f"Relation check failed: {relation}"
+            coeffs[sub] = g
 
         return coeffs
 
-    def check_saito_criterion(self, generators=None, verbose=True):
+    def scaled_minor_ideal(self, generators=None):
         r"""
-        Check the conditions of the generalized Saito criterion (Theorem 1 in saito.tex).
+        Return the scaled minor ideal ``I_A(G)``.
 
-        For `\ell + 1` generators, checks:
-        1. `g_{\ell+1} \in S_1 \setminus \{0\}` (i.e., degree 1 and nonzero)
-        2. `g_1, \ldots, g_\ell \in S_{>0}` have no non-trivial common divisor modulo `g_{\ell+1}`
+        For ``p >= ell`` candidate derivations, this is the ideal
+        generated by ``det(M_I[G]) / Q(A)`` for all row subsets
+        ``I`` with ``|I| = ell``.  If every scaled minor vanishes, the
+        zero ideal is returned.
+        """
+        coeffs = self.saito_coefficients(generators, as_dict=True)
+        coeffs = coeffs.values()
+        nonzero = [c for c in coeffs if c != 0]
+        if not nonzero:
+            return self.S.ideal(self.S.zero())
+        return self.S.ideal(nonzero)
+
+    def scaled_minor_ideal_height(self, generators=None):
+        r"""
+        Return ``ht I_\mathcal{A}(G)``.
+
+        Convention: if the ideal is improper (i.e. equal to ``S``), return
+        ``+infinity`` to signal that the height hypothesis of
+        Theorem 1.1 is violated by improperness rather than by low height.
+        """
+        I = self.scaled_minor_ideal(generators)
+        if I.is_one():
+            return float('inf')
+        return self.n - I.dimension()
+
+    def candidate_generates(self, generators):
+        r"""
+        Verify whether the given candidates generate ``D(\mathcal{A})``.
+
+        Returns ``True`` iff every minimal generator of ``D(\mathcal{A})``
+        is an ``S``-linear combination of ``generators``.  The check is
+        performed via Singular's ``reduce`` against a standard basis of
+        the submodule generated by the candidates.
+        """
+        from sage.all import singular as _sing
+        _sing.eval('ring Rcg = 0,(' + ','.join(str(v) for v in self.v) + '),dp;')
+        mod_body = ','.join(
+            '[' + ','.join(str(c) for c in self._to_vector(g)) + ']'
+            for g in generators
+        )
+        _sing.eval('module Mcg = ' + mod_body)
+        _sing.eval('Mcg = std(Mcg)')
+        for g in self.minimal_generators():
+            v_str = '[' + ','.join(str(c) for c in g.v) + ']'
+            red = _sing.eval('string(reduce(' + v_str + ', Mcg))')
+            entries = red.strip().lstrip('[').rstrip(']').split(',')
+            if not all(e.strip() == '0' for e in entries):
+                return False
+        return True
+
+    @staticmethod
+    def _to_vector(g):
+        if isinstance(g, VectorField):
+            return g.v
+        if hasattr(g, 'parent'):
+            return g
+        return vector(g)
+
+    def check_generalized_saito(self, generators=None, verify=True, verbose=True):
+        r"""
+        Check the hypotheses of "Saito-type generator criterion for nonfree arrangements".
+
+        For ``\ell+1`` homogeneous derivations
+        ``G = (\theta_1, \ldots, \theta_{\ell+1})`` in ``D(\mathcal{A})``:
+        compute the signed scaled minors ``g_i`` and the ideal
+        ``I_\mathcal{A}(G) = (g_1, \ldots, g_{\ell+1})``.  The criterion
+        says: if ``I_\mathcal{A}(G)`` is proper and ``ht I_\mathcal{A}(G)
+        \ge 3``, then ``G`` generates ``D(\mathcal{A})`` and its syzygy
+        module is freely generated by ``(g_1,\ldots,g_{\ell+1})``.
+        Additionally, if all ``g_i`` have positive degree and one is
+        linear, ``G`` is minimal and ``\mathcal{A}`` is SPOG.
 
         Parameters
         ----------
-        generators : list, optional
-            A list of VectorField objects, Sage vectors, or plain lists.
-            If ``None``, uses ``self.minimal_generators()``.
+        generators : iterable, optional
+            ``\ell + 1`` candidate derivations.  If ``None``, use
+            ``self.minimal_generators()``.
+        verify : bool
+            If ``True``, also independently check (by submodule equality)
+            whether ``G`` actually generates ``D(\mathcal{A})``.
+        verbose : bool
+            Print a human-readable summary.
 
         Returns
         -------
-        dict with keys 'coefficients', 'is_spog_by_criterion', 'g_last_deg', 'common_divisor_mod'
+        dict with keys
+            ``coefficients``, ``ideal``, ``is_proper``, ``height``,
+            ``criterion_applies``, ``all_positive_degree``,
+            ``has_linear``, ``predicts_minimal_spog``,
+            ``actually_generates`` (if ``verify=True``),
+            ``counterexample`` (True if criterion applies but
+            ``G`` does not generate ``D(\mathcal{A})`` -- which the
+            theorem says should never happen).
         """
-        coeffs = self.saito_coefficients(generators)
-        ell = self.n
-        g_last = coeffs[ell]
-        g_rest = coeffs[:ell]
+        if generators is None:
+            gens = self.minimal_generators()
+        else:
+            gens = generators
+        m = self._to_matrix(gens)
+        if m.nrows() != self.n + 1:
+            raise ValueError(
+                f'check_generalized_saito requires ell + 1 generators, '
+                f'got {m.nrows()} for ell={self.n}'
+            )
 
-        g_last_deg = g_last.degree() if g_last != 0 else -1
-        cond1 = (g_last != 0 and g_last_deg == 1)
+        coeffs = self.saito_coefficients(gens)
+        I = self.scaled_minor_ideal(gens)
+
+        is_proper = not I.is_one()
+        if is_proper:
+            ht = self.n - I.dimension()
+        else:
+            ht = float('inf')
+
+        criterion_applies = is_proper and ht >= 3
+
+        nonzero = [c for c in coeffs if c != 0]
+        all_pos_deg = bool(nonzero) and all(c.degree() > 0 for c in nonzero)
+        has_linear = any(c.degree() == 1 for c in nonzero)
+        predicts_minimal_spog = criterion_applies and all_pos_deg and has_linear
 
         # Check: g_1,...,g_ell have no common divisor mod g_{ell+1}
         # Compute gcd of g_rest modulo g_last
+        ell = self.n
+        g_last = coeffs[ell]
+        g_rest = coeffs[:ell]
         I_mod = ideal(g_last)
         g_mod = [self.S(g).reduce(I_mod.groebner_basis()) for g in g_rest]
         common = gcd(g_mod)
-        cond2 = (common.degree() == 0)  # common divisor is a constant
 
         result = {
             'coefficients': coeffs,
-            'is_spog_by_criterion': cond1 and cond2,
-            'g_last_deg': g_last_deg,
+            'ideal': I,
+            'is_proper': is_proper,
+            'height': ht,
+            'criterion_applies': criterion_applies,
+            'all_positive_degree': all_pos_deg,
+            'has_linear': has_linear,
+            'predicts_minimal_spog': predicts_minimal_spog,
             'common_divisor_mod': common,
         }
 
+        if verify:
+            actually = self.candidate_generates(gens)
+            result['actually_generates'] = actually
+            result['counterexample'] = criterion_applies and not actually
+
         if verbose:
-            print(f"g_{{ell+1}} = {coeffs[ell]}, degree = {g_last_deg}")
-            print(f"  Condition 1 (deg=1, nonzero): {cond1}")
+            print(f"  scaled minors (g_i):")
+            for i, g in enumerate(coeffs):
+                print(f"    g_{i} = {g}  (deg {g.degree() if g != 0 else -1})")
+            print(f"  proper:                     {is_proper}")
+            print(f"  ht I_A(G):                  {ht}")
+            print(f"  criterion applies (ht>=3):  {criterion_applies}")
+            print(f"  all g_i of positive degree: {all_pos_deg}")
+            print(f"  some g_i is linear:         {has_linear}")
+            print(f"  predicts minimal SPOG:      {predicts_minimal_spog}")
+            print(f"g_{{ell+1}} = {coeffs[ell]}")
             for i, g in enumerate(g_rest):
                 print(f"  g_{i} = {g} (degree {g.degree() if g != 0 else -1})")
             print(f"  gcd(g_0,...,g_{{ell-1}}) mod g_{{ell}} = {common}")
-            print(f"  Condition 2 (no common divisor mod g_{{ell}}): {cond2}")
-            print(f"  => SPOG by criterion: {cond1 and cond2}")
+            if verify:
+                print(f"  actually generates D(A):    {result['actually_generates']}")
+                if result['counterexample']:
+                    print("  *** COUNTEREXAMPLE: criterion satisfied but G does not generate ***")
+
+        return result
+
+    def scaled_minor_tensor(self, generators=None, *, signed=True):
+        r"""
+        Return the alternating ``(p-ell)``-tensor of scaled maximal minors.
+
+        For ``p = ell + k`` candidate derivations ``G`` with derivation
+        matrix ``M``, this is the element
+
+        .. math::
+
+            \tilde g \;=\; \sum_{|T|=k}\,(-1)^{\sigma(T)}\,
+                           g_{[p]\setminus T}\,e_{t_1}\wedge\cdots\wedge e_{t_k}
+            \;\in\; \bigwedge^{k} S^{p},
+
+        where ``g_I = det(M_I)/Q`` is the scaled ``ell``-minor and
+        ``\sigma(T) = \sum_j t_j - j`` is the ``signed=True`` sign convention
+        used by :meth:`saito_coefficients` and :meth:`delta_I`.
+
+        With this convention, ``\tilde g`` satisfies the cofactor identity:
+        contracting with the columns of ``M`` annihilates ``\tilde g`` in the
+        sense that, for ``k = 2``, the antisymmetric matrix
+        ``\tilde g`` (see :meth:`scaled_minor_matrix`) satisfies
+        ``\tilde g \cdot M = 0`` identically.  More generally, every contraction
+        of ``\tilde g`` with ``k - 1`` rows of ``M`` lies in the syzygy module
+        of ``G``.
+
+        Parameters
+        ----------
+        generators : iterable, optional
+            Candidate derivations.  Defaults to ``self.minimal_generators()``.
+        signed : bool
+            If ``True`` (default), include the Hodge-star sign
+            ``(-1)^{\sigma(T)}``.  If ``False``, return ``g_{[p]\setminus T}``
+            with no extra sign.
+
+        Returns
+        -------
+        dict
+            ``{T: \tilde g_T}`` keyed by ``k``-subsets ``T \subset [p]``.
+        """
+        m = self._to_matrix(generators if generators is not None else self.minimal_generators())
+        p = m.nrows()
+        ell = self.n
+        k = p - ell
+        if k < 0:
+            raise ValueError(f'scaled_minor_tensor requires p >= ell, got p={p}, ell={ell}')
+
+        unsigned = self.saito_coefficients(generators=generators, as_dict=True, signed=False)
+
+        tensor = {}
+        for T in itertools.combinations(range(p), k):
+            I = tuple(i for i in range(p) if i not in T)
+            if signed:
+                sigma_T = sum(T[j] - j for j in range(k))
+                tensor[T] = (-1) ** sigma_T * unsigned[I]
+            else:
+                tensor[T] = unsigned[I]
+        return tensor
+
+    def scaled_minor_matrix(self, generators=None):
+        r"""
+        Antisymmetric ``p \times p`` matrix view of :meth:`scaled_minor_tensor`
+        in the case ``p = ell + 2``.
+
+        Entries: ``M[a, b] = (-1)^{a+b+1} g_{[p]\setminus\{a,b\}}`` for
+        ``a < b`` and ``M[b, a] = -M[a, b]`` (zero diagonal).  Equivalently,
+        ``M[a, b]`` is the signed scaled minor from
+        :meth:`saito_coefficients` with ``as_dict=True, signed=True`` for the
+        ``\ell``-subset ``[p] \setminus \{a, b\}``.
+
+        Cofactor identity: ``self.scaled_minor_matrix(G) * M_G == 0`` holds
+        identically (no hypotheses on ``G``), where ``M_G`` is the derivation
+        matrix.  This is the reason the rows of ``\tilde g`` are
+        automatically syzygies of ``G``.
+
+        Raises ``ValueError`` unless ``p = ell + 2``.
+        """
+        m = self._to_matrix(generators if generators is not None else self.minimal_generators())
+        p = m.nrows()
+        ell = self.n
+        if p != ell + 2:
+            raise ValueError(
+                f'scaled_minor_matrix requires p = ell + 2, got p={p}, ell={ell}'
+            )
+
+        tensor = self.scaled_minor_tensor(generators=generators, signed=True)
+        mat = matrix(self.S, p, p)
+        for T, value in tensor.items():
+            a, b = T
+            mat[a, b] = value
+            mat[b, a] = -value
+        return mat
+
+    def plucker_relations(self, generators=None):
+        r"""
+        Evaluate the Grassmann--Plücker quadrics on :meth:`scaled_minor_tensor`.
+
+        For each pair ``(T_1, T_2)`` with ``|T_1| = k + 1`` and ``|T_2| = k - 1``
+        (where ``k = p - ell``), the Plücker quadric is
+
+        .. math::
+
+            Q(T_1, T_2) \;=\; \sum_{r=0}^{k}\,(-1)^r\,
+                              \tilde g_{T_1\setminus\{j_r\}}\,
+                              \tilde g_{T_2 \cup \{j_r\}}^{\rm signed}
+
+        where ``T_1 = (j_0 < \cdots < j_k)`` and ``\tilde g_{T_2 \cup \{j_r\}}^{\rm signed}``
+        denotes the signed component of ``\tilde g`` at the (canonically
+        reordered) ``k``-subset ``T_2 \cup \{j_r\}`` (zero if ``j_r \in T_2``).
+
+        ``\tilde g`` is **decomposable** (i.e., ``\tilde g = n_1 \wedge \cdots
+        \wedge n_k`` for some ``n_i \in S^p``) iff every ``Q(T_1, T_2)``
+        vanishes identically in ``S``.  See :meth:`is_plucker_decomposable`.
+
+        For ``k \le 1`` the relations are vacuous (empty dict): every
+        ``0``- or ``1``-tensor is decomposable.
+
+        Returns
+        -------
+        dict
+            ``{(T_1, T_2): Q(T_1, T_2)}`` of evaluated quadrics.
+        """
+        m = self._to_matrix(generators if generators is not None else self.minimal_generators())
+        p = m.nrows()
+        ell = self.n
+        k = p - ell
+        if k < 2:
+            return {}
+
+        tensor = self.scaled_minor_tensor(generators=generators, signed=True)
+
+        def signed_component(T):
+            """Signed component \\tilde g_T for any (possibly unordered or
+            repeating) k-tuple T.  Returns 0 if T has duplicates; otherwise
+            sorts T and multiplies by the sign of the permutation."""
+            if len(set(T)) != len(T):
+                return self.S.zero()
+            T_list = list(T)
+            sign = 1
+            for i in range(len(T_list)):
+                for j in range(i + 1, len(T_list)):
+                    if T_list[i] > T_list[j]:
+                        sign = -sign
+            return sign * tensor[tuple(sorted(T_list))]
+
+        relations = {}
+        for T1 in itertools.combinations(range(p), k + 1):
+            for T2 in itertools.combinations(range(p), k - 1):
+                value = self.S.zero()
+                for r, j in enumerate(T1):
+                    T1_minus = tuple(t for t in T1 if t != j)
+                    T2_plus = tuple(list(T2) + [j])
+                    value += (-1) ** r * tensor[T1_minus] * signed_component(T2_plus)
+                relations[(T1, T2)] = value
+        return relations
+
+    def is_plucker_decomposable(self, generators=None):
+        r"""
+        Return ``True`` iff the scaled minor tensor :meth:`scaled_minor_tensor`
+        is decomposable, equivalently all :meth:`plucker_relations` vanish.
+
+        For ``p \le ell + 1`` (``k \le 1``) the tensor is *automatically*
+        decomposable, so this returns ``True`` unconditionally.
+        """
+        return all(v == 0 for v in self.plucker_relations(generators=generators).values())
+
+    def unified_saito_diagnostic(self, generators=None, verify=True, verbose=True):
+        r"""
+        Report the data of the unified Saito-type setup for any ``p \ge ell``.
+
+        This method computes — and, if ``verify=True``, cross-checks — the two
+        $g_I$-only invariants that arise in the unified Saito-type criterion:
+
+        (i)  the height ``ht I_A(G)`` of the scaled minor ideal, and
+
+        (ii) whether the scaled minor tensor ``\tilde g \in \bigwedge^{p-\ell} S^p``
+             is **Plücker-decomposable**, i.e., factors as
+             ``\tilde g = n_1 \wedge \cdots \wedge n_k`` (cf.
+             :meth:`is_plucker_decomposable`).
+
+        For ``k = p - \ell \le 1`` the second invariant is automatic, and
+        ``(i)`` reproduces:
+
+        * ``k = 0``: the principal ideal ``\langle\det M / Q\rangle``.  The
+          condition ``ht \ge 3`` forces this to be the unit ideal — Saito's
+          classical theorem for free arrangements.
+        * ``k = 1``: ``\tilde g \in S^p`` is a $1$-vector, always decomposable;
+          the height bound ``\ge 3`` is the hypothesis of the generalised
+          Saito / SPOG criterion (cf. :meth:`check_generalized_saito`).
+
+        For ``k \ge 2``, decomposability is a non-trivial Grassmann--Plücker
+        quadric condition on the ``g_I``.  **It is necessary that
+        $\tilde g$ be decomposable for $G$ to generate $D(\mathcal{A})$** — the
+        rows of the antisymmetric matrix view (``k = 2``) are syzygies of $G$
+        by the cofactor identity, and S-spanning rows force decomposability.
+        However, the conjunction "(i) and (ii)" is **not sufficient** for
+        $G$ to generate $D(\mathcal{A})$; see ``Example 12`` of
+        ``notebooks/Saito_criterion_examples.ipynb`` for an explicit
+        ``\ell + 2``-generator counterexample.  The status of a complete
+        $g_I$-only sufficient condition for $k \ge 2$ is open.
+
+        Parameters
+        ----------
+        generators : iterable, optional
+            Candidate derivations.  Defaults to ``self.minimal_generators()``.
+        verify : bool
+            If ``True``, also independently check (via :meth:`candidate_generates`)
+            whether $G$ actually generates $D(\mathcal{A})$.
+        verbose : bool
+            Print a human-readable summary.
+
+        Returns
+        -------
+        dict with keys
+            ``p``, ``ell``, ``k``, ``height``, ``is_proper``, ``height_ok``
+            (truth value of ``ht \ge 3`` or ``ht = \infty``), ``decomposable``
+            (truth value of (ii)), ``necessary_conditions_hold`` (``True`` iff
+            both ``height_ok`` and ``decomposable`` hold), and, if
+            ``verify=True``, ``actually_generates`` and ``mismatch`` (``True``
+            iff ``necessary_conditions_hold`` but ``G`` does not generate —
+            i.e., a known instance of the gap between necessity and
+            sufficiency).
+        """
+        gens = list(generators if generators is not None else self.minimal_generators())
+        m = self._to_matrix(gens)
+        p = m.nrows()
+        ell = self.n
+        if p < ell:
+            raise ValueError(f'unified_saito_diagnostic requires p >= ell, got p={p}, ell={ell}')
+        k = p - ell
+
+        I_ideal = self.scaled_minor_ideal(gens)
+        is_proper = not I_ideal.is_one()
+        ht = self.scaled_minor_ideal_height(gens)
+        height_ok = (ht == float('inf')) or (isinstance(ht, (int, Integer)) and ht >= 3)
+
+        decomposable = self.is_plucker_decomposable(generators=gens)
+        necessary = height_ok and decomposable
+
+        result = {
+            'p': p,
+            'ell': ell,
+            'k': k,
+            'is_proper': is_proper,
+            'height': ht,
+            'height_ok': height_ok,
+            'decomposable': decomposable,
+            'necessary_conditions_hold': necessary,
+        }
+
+        if verify:
+            actually = self.candidate_generates(gens)
+            result['actually_generates'] = actually
+            result['mismatch'] = necessary and not actually
+
+        if verbose:
+            print(f"  p = {p}, ell = {ell}, k = p - ell = {k}")
+            print(f"  ht I_A(G):                       {ht}")
+            print(f"  is_proper:                       {is_proper}")
+            print(f"  (i)  ht >= 3 or improper:        {height_ok}")
+            if k <= 1:
+                print(f"  (ii) tilde g decomposable:       True (vacuous for k <= 1)")
+            else:
+                rels = self.plucker_relations(generators=gens)
+                n_total = len(rels)
+                n_zero = sum(1 for v in rels.values() if v == 0)
+                print(f"  (ii) tilde g decomposable:       {decomposable}  "
+                      f"({n_zero}/{n_total} Pluecker quadrics vanish)")
+            print(f"  (i) and (ii) (necessary, not sufficient for k >= 2): {necessary}")
+            if verify:
+                print(f"  actually generates D(A):         {result['actually_generates']}")
+                if result['mismatch']:
+                    print("  >>> Necessary conditions hold but G does NOT generate;")
+                    print("      this is a known gap between necessity and sufficiency for k >= 2.")
 
         return result
 
@@ -862,312 +1318,156 @@ class HyperplaneArrangement(SageObject):
             xlim = (xlim[0], -(b*ylim[0]+c)/a)
         return [(-c/a,q) if b==0 else (p,(-c-a*p)/b) for p,q in zip(xlim,(ylim[1],ylim[0]))]
 
+    def list_ntf2(self, i):
+        results = {}
+        B = self.deletion([i])
+        if B.is_free:
+            print(f"del {i} is free", B.degrees())
+        else:
+            C = self.restriction(i)
+            print(f"Res to {i} free?: {C.is_free}")
+            for j in range(i + 1, self.num_planes):
+                B = self.deletion([i, j])
+                results[(i, j)] = B.degrees()
+                if B.is_spog():
+                    print('SPOG:', (i, j), B.degrees())
+                elif B.is_free:
+                    print('free: ', (i, j), B.degrees())
+                else:
+                    st = f"pd={len(B.free_resolution()) - 1}"
+                    print(st, (i, j), B.degrees())
+        return results
 
-def list_ntf2(i, A=None):
-    results = {}
-    B = A.deletion([i])
-    if B.is_free:
-        print(f"del {i} is free", B.degs())
-    else:
-        C = A.restriction(i)
-        print(f"Res to {i} free?: {C.is_free}")
-        for j in range(i + 1, A.num_planes):
-            B = A.deletion([i, j])
-            results[(i, j)] = B.degs()
-            if B.is_spog():
-                print('SPOG:', (i, j), B.degs())
-            elif B.is_free:
-                print('free: ', (i, j), B.degs())
-            else:
-                st = f"pd={len(B.free_resolution()) - 1}"
-                print(st, (i, j), B.degs())
-    return results
+    def compute_basis(self, k0):
+        mat = self.mat
+        k = k0 - 1
+        p = mat.nrows()
+        n = mat.ncols()
+        K = mat.base_ring()
+        S = PolynomialRing(K, 'x', n)
 
-def basis_da(mat, k0):
-    k = k0 - 1
-    p = mat.nrows()
-    n = mat.ncols()
-    K = mat.base_ring()
-    S = PolynomialRing(K, 'x', n)
+        M, Sk1 = coef_map(k, S)
+        m1 = binomial(n + k - 1, k)
+        m2 = len(Sk1)
 
-    M, Sk1 = coef_map(k, S)
-    m1 = binomial(n + k - 1, k)
-    m2 = len(Sk1)
+        C = zero_matrix(K, n*m2 + p*m1, p*m2)
 
-    C = zero_matrix(K, n*m2 + p*m1, p*m2)
+        for i in range(p):
+            D = zero_matrix(K, n*m2 + p*m1, m2)
+            Y = sum(mat[i, j]*M[j] for j in range(n))
+            D[(n*m2 + i*m1):(n*m2 + (i + 1)*m1), :] = Y
+            for j in range(m2):
+                D[j*n:(j + 1)*n, j] = mat[i, :].transpose()
+            C[:, i*m2:(i + 1)*m2] = D
 
-    for i in range(p):
-        D = zero_matrix(K, n*m2 + p*m1, m2)
-        Y = sum(mat[i, j]*M[j] for j in range(n))
-        D[(n*m2 + i*m1):(n*m2 + (i + 1)*m1), :] = Y
-        for j in range(m2):
-            D[j*n:(j + 1)*n, j] = mat[i, :].transpose()
-        C[:, i*m2:(i + 1)*m2] = D
+        B = C.sparse_matrix().left_kernel().matrix()
+        B = B[:, :n*m2]
 
-    B = C.sparse_matrix().left_kernel().matrix()
-    B = B[:, :n*m2]
+        basis = []
+        for i in range(B.nrows()):
+            if B[i] != 0:
+                E = sum(Sk1[j]*B[i, j*n:(j + 1)*n] for j in range(m2))
+                basis.append(VectorField(vector(E), S))
 
-    basis = []
-    for i in range(B.nrows()):
-        if B[i] != 0:
-            E = sum(Sk1[j]*B[i, j*n:(j + 1)*n] for j in range(m2))
-            basis.append(VectorField(vector(E), S))
+        return VectorFieldModule(basis)
 
-    return VectorFieldModule(basis)
+    def compute_basis_linear(self, max_k=None, verbose=True):
+        mat = self.mat
+        p = mat.nrows()
+        n = mat.ncols()
+        max_k = p - n + 1 if max_k is None else max_k
 
-def min_gen_arr_linear(mat, max_k=None, verbose=True):
-    p = mat.nrows()
-    n = mat.ncols()
-    max_k = p - n + 1 if max_k is None else max_k
+        K = mat.base_ring()
+        S = PolynomialRing(K, 'x', n)
+        v = S.gens()
 
-    K = mat.base_ring()
-    S = PolynomialRing(K, 'x', n)
-    v = S.gens()
+        V_mod = self.compute_basis(1)
+        if verbose:
+            print(f'deg 1, num gens {len(V_mod)}')
 
-    V_mod = basis_da(mat, 1)
-    if verbose:
-        print(f'deg 1, num gens {len(V_mod)}')
+        MG = list(V_mod.gens)
+        for k in range(max_k - 1):
+            M = V_mod.image_lambda(n)
+            V_mod = self.compute_basis(k + 2)
 
-    MG = list(V_mod.gens)
-    for k in range(max_k - 1):
-        M = V_mod.image_lambda(n)
-        V_mod = basis_da(mat, k + 2)
+            Sk1_list = sk_expo(k + 2, n)
+            Sk1_dic = {e: i for i, e in enumerate(Sk1_list)}
+            Sk1 = [exponent_to_polynomial(expo, v) for expo in Sk1_list]
 
-        Sk1_list = sk_expo(k + 2, n)
-        Sk1_dic = {e: i for i, e in enumerate(Sk1_list)}
-        Sk1 = [exponent_to_polynomial(expo, v) for expo in Sk1_list]
+            V1 = V_mod.flatten_coefficients(Sk1_dic)
+            lDk1 = M.augment(V1)
+            piv = np.array(lDk1.pivots())
+            mask = piv >= M.ncols()
 
-        V1 = V_mod.to_flatten(Sk1_dic)
-        lDk1 = M.augment(V1)
-        piv = np.array(lDk1.pivots())
-        mask = piv >= M.ncols()
+            new_gens = [VectorField(vector(sum(Sk1[j]*lDk1[j*n:(j + 1)*n, i]
+                                 for j in range(len(Sk1)))), S)
+                       for i in piv[mask]]
+            MG.extend(new_gens)
 
-        new_gens = [VectorField(vector(sum(Sk1[j]*lDk1[j*n:(j + 1)*n, i]
-                             for j in range(len(Sk1)))), S)
-                   for i in piv[mask]]
-        MG.extend(new_gens)
+            if verbose:
+                print(f'deg {k + 2}, dim {len(V_mod)}, '
+                      f'codim {n*binomial(n + k, k + 1) - len(V_mod)}, '
+                      f'num new gen {sum(mask)}')
+
+        return VectorFieldModule(MG)
+
+    def compute_basis_syzygy(self, verbose=True):
+        mat = self.mat
+        p = mat.nrows()
+        n = mat.ncols()
+        K = mat.base_ring()
+
+        S = PolynomialRing(K, 'x', n)
+        v = S.gens()
+        PD = PolynomialRing(K, 'd', len(v))
+        FM = PolynomialRing(K, list(v) + list(PD.gens()))
+        d = FM.gens()[len(v):]
 
         if verbose:
-            print(f'deg {k + 2}, dim {len(V_mod)}, '
-                  f'codim {n*binomial(n + k, k + 1) - len(V_mod)}, '
-                  f'num new gen {sum(mask)}')
+            print(f'Number of planes: {p}')
 
-    return VectorFieldModule(MG)
+        r = [d[i]*d[j] for i in range(len(v))
+             for j in range(i, len(v))]
 
-def min_gen_arr(mat, verbose=True):
-    if not is_distinct_planes(mat):
-        raise ValueError('The arrangement contains duplicated planes!')
+        GEN = []
+        GEN_vec = []
+        degs = []
 
-    p = mat.nrows()
-    n = mat.ncols()
-    K = mat.base_ring()
+        for k in range(p - n + 2):
+            if sum(degs[:len(v) - 1]) + k < p < sum(degs):
+                flag_skip = False
+                for comb in itertools.combinations(degs, len(v) - 1):
+                    if sum(comb) + k + 1 == p:
+                        flag_skip = True
+                        if verbose:
+                            print(f"Skipping deg {k + 1} by Saito's criterion")
+                        break
+                if flag_skip:
+                    continue
 
-    S = PolynomialRing(K, 'x', n)
-    v = S.gens()
-    PD = PolynomialRing(K, 'd', len(v))
-    FM = PolynomialRing(K, list(v) + list(PD.gens()))
-    d = FM.gens()[len(v):]
+            G_mod = self.compute_basis(k + 1)
+            if verbose:
+                print(f'Number of vector generators at deg {k + 1}: {len(G_mod)}')
 
-    if verbose:
-        print(f'Number of planes: {p}')
+            I = Ideal(*r, *GEN)
+            for g in G_mod:
+                g_d = g.to_derivative()
+                if g_d not in I:
+                    GEN.append(g_d)
+                    GEN_vec.append(g)
+                    I = Ideal(*r, *GEN)
+                    degs.append(k + 1)
 
-    r = [d[i]*d[j] for i in range(len(v))
-         for j in range(i, len(v))]
+                    if len(degs) == len(v) and sum(degs) == p:
+                        if verbose:
+                            print('Arrangement is free')
+                            print('Degree sequence:', degs)
+                        return VectorFieldModule(GEN_vec)
 
-    GEN = []
-    GEN_vec = []
-    degs = []
-
-    for k in range(p - n + 2):
-        if sum(degs[:len(v) - 1]) + k < p < sum(degs):
-            flag_skip = False
-            for comb in itertools.combinations(degs, len(v) - 1):
-                if sum(comb) + k + 1 == p:
-                    flag_skip = True
-                    if verbose:
-                        print(f"Skipping deg {k + 1} by Saito's criterion")
-                    break
-            if flag_skip:
-                continue
-
-        G_mod = basis_da(mat, k + 1)
         if verbose:
-            print(f'Number of vector generators at deg {k + 1}: {len(G_mod)}')
+            print('Degree sequence:', degs)
+        return VectorFieldModule(GEN_vec)
 
-        I = Ideal(*r, *GEN)
-        for g in G_mod:
-            g_d = g.to_derivative()
-            if g_d not in I:
-                GEN.append(g_d)
-                GEN_vec.append(g)
-                I = Ideal(*r, *GEN)
-                degs.append(k + 1)
-
-                if len(degs) == len(v) and sum(degs) == p:
-                    if verbose:
-                        print('Arrangement is free')
-                        print('Degree sequence:', degs)
-                    return VectorFieldModule(GEN_vec)
-
-    if verbose:
-        print('Degree sequence:', degs)
-    return VectorFieldModule(GEN_vec)
-
-
-
-HyperPlaneArr = HyperplaneArrangement
-
-# Shim functions for backward compatibility
-def vector_to_derivative(u):
-    from .vector_field import VectorField
-    return VectorField(u).to_derivative()
-
-def derivative_to_vector(u):
-    from .vector_field import VectorField
-    return VectorField.from_derivative(u).v
-
-def div(u, S):
-    from .vector_field import VectorField
-    return VectorField(u, S).div()
-
-def rot(u, S):
-    from .vector_field import VectorField
-    return VectorField(u, S).rot()
-
-def laplacian(u, S):
-    from .vector_field import VectorField
-    return VectorField(u, S).laplacian().v
-
-def degseq(MG):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(MG).degs()
-
-def is_s_indep(MG):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(MG).is_s_indep()
-
-def saito(MG):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(MG).saito()
-
-def vector_basis(G):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(G).vector_basis().gens
-
-def vector_to_flatten(U, Sk_dic, n=0):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(U).to_flatten(Sk_dic, n)
-
-def graded_component(G, deg):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(G).graded_component(deg).gens
-
-def gendic(generators):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(generators).gendic()
-
-def minimal_generating_set(G):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(G).minimal_generating_set().gens
-
-def image_lambda(V, n):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(V).image_lambda(n)
-
-def divergence_free(G):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(G).divergence_free().gens
-
-def rotation_free(G):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(G).rotation_free().gens
-
-def harmonic(G):
-    from .vector_field import VectorFieldModule
-    return VectorFieldModule(G).harmonic().gens
-
-
-def dehomogenise(A, G):
-    from .vector_field import VectorFieldModule
-    if isinstance(G, VectorFieldModule):
-        return G.dehomogenise().gens
-    return VectorFieldModule(G).dehomogenise().gens
-
-def affine_basis(A, G):
-    from .vector_field import VectorFieldModule
-    if isinstance(G, VectorFieldModule):
-        return G.affine_basis().gens
-    return VectorFieldModule(G).affine_basis().gens
-
-def fit_vf(A, Obs, mod_gens, verbose=True):
-    from .fit import fit_vf as _fit_vf
-    return _fit_vf(A, Obs, mod_gens, verbose)
-
-def fit_vorticity(A, Obs, mod_gens, verbose=True):
-    from .fit import fit_vorticity as _fit_vorticity
-    return _fit_vorticity(A, Obs, mod_gens, verbose)
-
-def given_min_error(A, P, e0, verbose=True):
-    from .fit import given_min_error as _given_min_error
-    return _given_min_error(A, P, e0, verbose)
-
-def constructive_closure(A, subset, return_indices=False):
-    return A.constructive_closure(subset, return_indices=return_indices)
-
-def intersection_lattice(A):
-    return A.intersection_lattice()
-
-def minimal_constructive_subset(A, max_size=None, return_indices=False):
-    return A.minimal_constructive_subset(max_size=max_size, return_indices=return_indices)
-
-def s_invariant(A, max_size=None):
-    return A.s_invariant(max_size=max_size)
-
-def s(A, max_size=None):
-    return A.s_invariant(max_size=max_size)
-
-__all__ = [
-    'HyperplaneArrangement',
-    'HyperPlaneArr',
-    'VectorField',
-    'VectorFieldModule',
-    'degseq',
-    'is_distinct_planes',
-    'remove_duplicate_planes',
-    'coord_vec',
-    'is_s_indep',
-    'saito',
-    'vector_basis',
-    'list_ntf2',
-    'create_generic_arrangement',
-    'vector_to_flatten',
-    'graded_component',
-    'vector_to_derivative',
-    'derivative_to_vector',
-    'gendic',
-    'module_intersection',
-    'sk_expo',
-    'exponent_to_polynomial',
-    'coef_map',
-    'image_lambda',
-    'basis_da',
-    'min_gen_arr_linear',
-    'minimal_generating_set',
-    'min_gen_arr',
-    'dehomogenise',
-    'affine_basis',
-    'fit_vf',
-    'fit_vorticity',
-    'given_min_error',
-    'constructive_closure',
-    'intersection_lattice',
-    'minimal_constructive_subset',
-    's_invariant',
-    's',
-    'div',
-    'rot',
-    'laplacian',
-    'divergence_free',
-    'rotation_free',
-    'harmonic',
-]
+    def fit_given_min_error(self, P, e0, verbose=True):
+        from .fit import given_min_error as _given_min_error
+        return _given_min_error(self, P, e0, verbose=verbose)

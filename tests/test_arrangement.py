@@ -1,10 +1,9 @@
 import pytest
 from sage.all import matrix, QQ, GF, vector, PolynomialRing, identity_matrix
 from hyperplane_arrangements.arrangement import (
-    HyperplaneArrangement, basis_da, min_gen_arr, min_gen_arr_linear, degseq,
-    constructive_closure, intersection_lattice, minimal_constructive_subset, s_invariant, s,
+    HyperplaneArrangement,
 )
-from hyperplane_arrangements.utils import coord_vec
+from hyperplane_arrangements.utils import coordinate_vectors
 
 def test_arrangement_from_matrix():
     mat = matrix(QQ, [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
@@ -63,20 +62,20 @@ def test_constructive_closure_and_s_invariant():
         [1, -1, 0],
     ]))
 
-    closure, closure_indices = constructive_closure(A, [0, 1, 2], return_indices=True)
+    closure, closure_indices = A.constructive_closure([0, 1, 2], return_indices=True)
     assert closure_indices == (0, 1, 2, 3)
     assert closure.num_planes == 4
 
-    B, indices = minimal_constructive_subset(A, return_indices=True)
+    B, indices = A.minimal_constructive_subset(return_indices=True)
     assert indices == (0, 1, 2)
     assert B.num_planes == 3
     assert A.constructively_generates(indices)
-    assert s_invariant(A) == 3
-    assert s(A) == 3
+    assert A.s_invariant() == 3
+    assert A.s_invariant() == 3
 
 def test_constructive_closure_is_trivial_in_rank_two():
     A = HyperplaneArrangement(matrix(QQ, [[1, 0], [0, 1], [1, 1]]))
-    B, indices = minimal_constructive_subset(A, return_indices=True)
+    B, indices = A.minimal_constructive_subset(return_indices=True)
     assert indices == (0, 1, 2)
     assert B.num_planes == 3
     assert A.constructive_closure_indices([0, 1]) == (0, 1)
@@ -105,7 +104,7 @@ def test_intersection_lattice_basic_central_arrangement():
 def test_intersection_lattice_shim_function():
     A = HyperplaneArrangement(matrix(QQ, [[1, 0], [0, 1], [1, 1]]))
     direct = A.intersection_lattice()
-    shimmed = intersection_lattice(A)
+    shimmed = A.intersection_lattice()
 
     assert set(direct) == set(shimmed)
 
@@ -116,7 +115,7 @@ def test_dimension_formula():
     assert A.vf_dimension(3) == 8
 
 def test_ntf2_dimension_4_arrangements():
-    from hyperplane_arrangements.utils import coord_vec
+    from hyperplane_arrangements.utils import coordinate_vectors
 
     mat1 = [[ 1,  0,  0,  0],
             [ 0,  1,  0,  0],
@@ -130,37 +129,37 @@ def test_ntf2_dimension_4_arrangements():
             [ 0,  0, -1,  1]]
     A1 = HyperplaneArrangement(matrix(QQ, mat1))
     assert A1.num_planes == 10
-    assert A1.degs() == [1, 3, 3, 3]
+    assert A1.degrees() == [1, 3, 3, 3]
 
     mat2 = [[1,0,0,0],[1,1,0,0],[1,0,1,0],[1,0,0,1],
             [1,-1,0,0],[1,0,-1,0],[1,0,0,-1],
             [0,1,-1,0],[0,0,1,-1],[0,1,0,1]]
     A2 = HyperplaneArrangement(matrix(QQ, mat2))
     assert A2.num_planes == 10
-    assert A2.degs() == [1, 3, 3, 3]
+    assert A2.degrees() == [1, 3, 3, 3]
 
     B2 = A2.deletion([1,2])
     assert B2.num_planes == 8
-    assert B2.degs() == [1, 3, 3, 3, 3, 3, 3]
+    assert B2.degrees() == [1, 3, 3, 3, 3, 3, 3]
 
-    mat3 = coord_vec(4) + [[1 ,-1,0, 0],[1,0 ,-1, 0],[1,0,0,-1],
+    mat3 = coordinate_vectors(4) + [[1 ,-1,0, 0],[1,0 ,-1, 0],[1,0,0,-1],
                            [0 ,1, -1,0],[0,1 ,0, -1],[0,0,1,-1],
                            [0,1 ,-1, 1],[1,-1,1,-1]]
     A3 = HyperplaneArrangement(matrix(QQ, mat3))
     assert A3.num_planes == 12
-    assert A3.degs() == [1, 3, 4, 4]
+    assert A3.degrees() == [1, 3, 4, 4]
 
     B3_1 = A3.deletion([0,1])
     assert B3_1.num_planes == 10
-    assert B3_1.degs() == [1, 3, 3, 4, 4]
+    assert B3_1.degrees() == [1, 3, 3, 4, 4]
 
     B3_2 = A3.deletion([0,7])
     assert B3_2.num_planes == 10
-    assert B3_2.degs() == [1, 3, 4, 4, 4, 5]
+    assert B3_2.degrees() == [1, 3, 4, 4, 4, 5]
 
     B3_3 = A3.deletion([1,9])
     assert B3_3.num_planes == 10
-    assert B3_3.degs() == [1, 3, 4, 4, 4, 4]
+    assert B3_3.degrees() == [1, 3, 4, 4, 4, 4]
 
 
 # --- Notebook cell 3: Fano plane over QQ and GF(2) ---
@@ -173,7 +172,7 @@ def test_fano_plane_QQ():
         seed.append(l)
         mat.append(seed.copy())
     A = HyperplaneArrangement(mat, base_field=QQ)
-    assert A.degs() == [1, 1, 1, 1, 1, 1, 1]
+    assert A.degrees() == [1, 1, 1, 1, 1, 1, 1]
 
 
 def test_fano_plane_GF2():
@@ -184,7 +183,7 @@ def test_fano_plane_GF2():
         seed.append(l)
         mat.append(seed.copy())
     A = HyperplaneArrangement(mat, base_field=GF(2))
-    assert A.degs() == [0, 0, 0, 1, 2, 3, 3, 3]
+    assert A.degrees() == [0, 0, 0, 1, 2, 3, 3, 3]
 
 
 # --- Notebook cell 5: free arrangement dim=3, |A|=3 ---
@@ -192,7 +191,7 @@ def test_fano_plane_GF2():
 def test_free_coord_arrangement_3():
     A = HyperplaneArrangement(matrix(QQ, [[1,0,0],[0,1,0],[0,0,1]]))
     assert A.is_free
-    assert A.degs() == [1, 1, 1]
+    assert A.degrees() == [1, 1, 1]
     MG = A.minimal_generators()
     assert len(MG) == 3
     for g in MG:
@@ -208,7 +207,7 @@ def test_arrangement_from_Q_3d():
     assert A.num_planes == 3
     assert A.n == 3
     assert A.is_free
-    assert A.degs() == [1, 1, 1]
+    assert A.degrees() == [1, 1, 1]
 
 
 # --- Notebook cell 10: generators are in D(A) ---
@@ -282,23 +281,23 @@ def test_deletion_multiple_indices():
     A = HyperplaneArrangement(matrix(QQ, mat))
     B = A.deletion([2, 4, 9])
     assert B.num_planes == 7
-    assert B.degs() == [1, 2, 2, 2]
+    assert B.degrees() == [1, 2, 2, 2]
 
 
 # --- Notebook cells 25-27: Orlik-Terao Ex4.36 free ⊂ non-free ⊂ free ---
 
 def test_orlik_terao_ex436():
-    A = HyperplaneArrangement(matrix(QQ, coord_vec(3)+[[1,1,-1],[1,1,0]]))
+    A = HyperplaneArrangement(matrix(QQ, coordinate_vectors(3)+[[1,1,-1],[1,1,0]]))
     assert A.is_free
-    assert A.degs() == [1, 2, 2]
+    assert A.degrees() == [1, 2, 2]
 
     B = A.deletion([4])
     assert not B.is_free
-    assert B.degs() == [1, 2, 2, 2]
+    assert B.degrees() == [1, 2, 2, 2]
 
     C = B.deletion([3])
     assert C.is_free
-    assert C.degs() == [1, 1, 1]
+    assert C.degrees() == [1, 1, 1]
 
 
 # --- Notebook cell 29: restriction ---
@@ -333,13 +332,13 @@ def test_parametrised_family_free():
     t2 = 3
     # t = -b => free
     A = HyperplaneArrangement(matrix(QQ,
-        coord_vec(3)+[[1,1,0],[b,0,1],[0,-b,1],[0,t2,1]]))
+        coordinate_vectors(3)+[[1,1,0],[b,0,1],[0,-b,1],[0,t2,1]]))
     assert A.is_free
-    assert A.degs() == [1, 3, 3]
+    assert A.degrees() == [1, 3, 3]
 
     # t != -b => not free
     A2 = HyperplaneArrangement(matrix(QQ,
-        coord_vec(3)+[[1,1,0],[b,0,1],[0,1,1],[0,t2,1]]))
+        coordinate_vectors(3)+[[1,1,0],[b,0,1],[0,1,1],[0,t2,1]]))
     assert not A2.is_free
 
 
@@ -349,19 +348,44 @@ def test_degs_depend_on_base_field():
     mat = [[1,0,0],[0,1,0],[0,0,1],[1,1,0],[1,1,1],[1,0,-1],[0,1,1]]
     A = HyperplaneArrangement(mat, base_field=QQ)
     B = HyperplaneArrangement(mat, base_field=GF(2))
-    assert A.degs() == [1, 3, 3]
-    assert B.degs() == [1, 2, 4]
+    assert A.degrees() == [1, 3, 3]
+    assert B.degrees() == [1, 2, 4]
 
 
 # --- Notebook cell 48: generic arrangement degree pattern ---
 
 def test_generic_arrangement_degree_pattern():
     n = 3
-    mat = matrix(QQ, coord_vec(n)+[[1,1,1],[2,3,1],[3,4,1]])
+    mat = matrix(QQ, coordinate_vectors(n)+[[1,1,1],[2,3,1],[3,4,1]])
     A = HyperplaneArrangement(mat)
     # p=6, generic in dim 3: each step adds p-n generators
     assert A.num_planes == 6
-    assert A.degs() == [1, 4, 4, 4, 4, 4]
+    assert A.degrees() == [1, 4, 4, 4, 4, 4]
+
+
+def test_scaled_minor_ideal_for_more_than_ell_plus_one_generators():
+    n = 3
+    A = HyperplaneArrangement(matrix(QQ, coordinate_vectors(n)+[[1,1,1],[2,3,1],[3,4,1]]))
+    G = list(A.minimal_generators())
+
+    coeffs = A.saito_coefficients(G)
+    assert isinstance(coeffs, dict)
+    assert len(coeffs) == 20  # C(6, 3)
+
+    assert A.scaled_minor_ideal(G) == A.S.ideal(A.determinant_ideal())
+    assert A.scaled_minor_ideal_height(G) >= 0
+
+    with pytest.raises(ValueError, match="ell \\+ 1 generators"):
+        A.check_generalized_saito(generators=G)
+
+
+def test_saito_coefficients_keep_signed_list_for_ell_plus_one_generators():
+    A = HyperplaneArrangement(matrix(QQ, [[1,0,0],[0,1,0],[0,0,1],[1,1,1],[1,1,2]]))
+    coeffs = A.saito_coefficients()
+
+    assert isinstance(coeffs, list)
+    assert len(coeffs) == A.n + 1
+    assert A.scaled_minor_ideal() == A.S.ideal([c for c in coeffs if c != 0])
 
 
 # --- Notebook cell 59: addition makes arrangement free ---
@@ -371,10 +395,10 @@ def test_addition_free():
     assert not A.is_free
     B = A.addition([1, 0, 1])
     assert B.is_free
-    assert B.degs() == [1, 2, 2]
+    assert B.degrees() == [1, 2, 2]
     C = A.addition([1, 1, 0])
     assert C.is_free
-    assert C.degs() == [1, 2, 2]
+    assert C.degrees() == [1, 2, 2]
 
 
 # --- Notebook cell 60: relations (syz) ---
@@ -394,7 +418,7 @@ def test_multi_arrangement_restriction():
     B = A.restriction(3)
     assert B.multiplicity is not None
     MG = B.compute_multi_minimal_generators()
-    assert degseq(MG) == [2, 2, 2]
+    assert MG.degrees() == [2, 2, 2]
 
 
 # --- Notebook cell 32: deletion then restriction ---
@@ -406,7 +430,7 @@ def test_deletion_then_restriction():
     B = A.deletion([0]).restriction(1)
     assert B.multiplicity == [1, 1, 1, 1]
     MG = B.compute_multi_minimal_generators()
-    assert degseq(MG) == [1, 1, 2]
+    assert MG.degrees() == [1, 1, 2]
 
 
 # --- Notebook cell 61: SPOG with higher degrees ---
@@ -431,15 +455,15 @@ def test_spog_higher_degree():
 
 def test_not_free_arrangement():
     A = HyperplaneArrangement(matrix(QQ,
-        coord_vec(3)+[[1,1,0],[1,3,1],[0,3,1],[0,2,1],[0,1,1],[0,1,-1],[0,1,2]]))
-    assert A.degs() == [1, 3, 6]
+        coordinate_vectors(3)+[[1,1,0],[1,3,1],[0,3,1],[0,2,1],[0,1,1],[0,1,-1],[0,1,2]]))
+    assert A.degrees() == [1, 3, 6]
     assert A.is_free
 
 
 def test_spog_level_coeff_in_arrangement():
     """SPOG whose level coeff is already in the arrangement (counter-example to NT-free minus)."""
     A = HyperplaneArrangement(matrix(QQ,
-        coord_vec(3)+[[1,1,0],[1,3,1],[0,3,1],[0,2,1],[0,1,1],[0,1,-1],[0,1,2]]))
+        coordinate_vectors(3)+[[1,1,0],[1,3,1],[0,3,1],[0,2,1],[0,1,1],[0,1,-1],[0,1,2]]))
     B = A.deletion([1, 5])
     spog = B.is_spog()
     assert spog
@@ -449,7 +473,7 @@ def test_spog_level_coeff_in_arrangement():
 # --- Notebook cell 78-79: free resolution length (projective dimension) ---
 
 def test_free_resolution_pd_dim5():
-    A = HyperplaneArrangement(matrix(QQ, coord_vec(5)+[[1,1,1,1,1]]))
+    A = HyperplaneArrangement(matrix(QQ, coordinate_vectors(5)+[[1,1,1,1,1]]))
     res = A.free_resolution()
     assert res._length == 4  # pd = 4
 
@@ -460,8 +484,8 @@ def test_ziegler_pair_same_degs():
     M = [[0,1,0],[2,2,1],[3,1,1],[8,-1,4],[9,3,-1]]
     A = HyperplaneArrangement(matrix(QQ, M+[[9,-2,3],[11,2,1],[5,5,-2]]))
     B = HyperplaneArrangement(matrix(QQ, M+[[21,-4,7],[19,4,1],[10,10,-5]]))
-    assert A.degs() == [1, 5, 5, 5, 5]
-    assert B.degs() == [1, 5, 5, 5, 5]
+    assert A.degrees() == [1, 5, 5, 5, 5]
+    assert B.degrees() == [1, 5, 5, 5, 5]
 
 
 # --- basis_da and alternative algorithms agree ---
@@ -469,11 +493,11 @@ def test_ziegler_pair_same_degs():
 def test_basis_da_agrees_with_minimal_generators():
     mat = matrix(QQ, [[1,0,0],[0,1,0],[0,0,1],[1,1,1]])
     A = HyperplaneArrangement(mat)
-    expected = A.degs()
-    MG2 = min_gen_arr(mat, verbose=False)
-    assert MG2.degs() == expected
-    MG3 = min_gen_arr_linear(mat, verbose=False)
-    assert MG3.degs() == expected
+    expected = A.degrees()
+    MG2 = A.compute_basis_syzygy(verbose=False)
+    assert MG2.degrees() == expected
+    MG3 = A.compute_basis_linear(verbose=False)
+    assert MG3.degrees() == expected
 
 
 # --- Notebook cell 50-51: near-pencil arrangements max deg = p-n+1 ---
@@ -481,7 +505,7 @@ def test_basis_da_agrees_with_minimal_generators():
 def test_near_pencil_max_deg():
     n = 5
     for p in [6, 7, 8]:
-        mat = matrix(QQ, coord_vec(n)+[[t]+[1]*(n-1) for t in range(1, p-n+1)])
+        mat = matrix(QQ, coordinate_vectors(n)+[[t]+[1]*(n-1) for t in range(1, p-n+1)])
         A = HyperplaneArrangement(mat)
         assert A.num_planes == p
-        assert max(A.degs()) <= p - n + 1
+        assert max(A.degrees()) <= p - n + 1

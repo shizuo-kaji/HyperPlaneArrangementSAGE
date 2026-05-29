@@ -1,10 +1,17 @@
 """Hyperplane arrangement utilities for Sage."""
-from . import arrangement as _arrangement
-from . import tangential_field as _tfield
-from . import fit as _fit
 
-__all__ = []
-for module in (_arrangement, _tfield, _fit):
-    names = getattr(module, '__all__', [])
-    __all__.extend(names)
-    globals().update({name: getattr(module, name) for name in names})
+from .arrangement import HyperplaneArrangement
+from .vector_field import VectorField, VectorFieldModule
+from .tangential_field import ConvexPolygonFlow, Vortex
+from .minimal_region import GreedyCutAllSolver, CppGreedyCutAllSolver, Solution
+
+__all__ = [
+    'HyperplaneArrangement',
+    'VectorField',
+    'VectorFieldModule',
+    'ConvexPolygonFlow',
+    'Vortex',
+    'GreedyCutAllSolver',
+    'CppGreedyCutAllSolver',
+    'Solution',
+]

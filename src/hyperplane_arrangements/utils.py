@@ -11,7 +11,7 @@ from sage.structure.sequence import Sequence
 
 minbase = lambda L: singular_function('minbase')(Sequence(L))
 
-def coord_vec(n):
+def coordinate_vectors(n):
     r"""Return the list of coordinate vectors in ``QQ^n``."""
     return list(np.eye(n))
 
@@ -41,7 +41,7 @@ def remove_duplicate_planes(mat):
 def create_generic_arrangement(n, k):
     r"""Return a random generic arrangement in ``QQ^n`` with ``k`` planes."""
     from sage.all import random_vector
-    E = coord_vec(n) + [[1]*n]
+    E = coordinate_vectors(n) + [[1]*n]
     while len(E) < k:
         dependent = True
         while dependent:
