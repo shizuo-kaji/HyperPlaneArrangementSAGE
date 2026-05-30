@@ -525,22 +525,29 @@ private:
     }
 };
 
+// 最終的な解（互換性のための1つ目の配置 + 全ての最小配置）
+struct SolutionConfig {
+    std::vector<std::vector<Rational>> lines;
+    std::vector<Point> seeds;
+};
+
 struct Solution {
     int regions = 0;
     std::vector<Normal> normals;
     std::vector<std::vector<Rational>> lines_by_dir;
     std::vector<Point> seed_points;
+    std::vector<SolutionConfig> configs; // 追加: 全ての最小配置
 };
 
+// 探索中に保持するベストな記録
 struct BestRecord {
     int regions = 0;
-    std::vector<std::vector<Rational>> lines;
-    std::vector<Point> seeds;
+    std::vector<SolutionConfig> configs;
 };
 
 class IncrementalJsonWriter {
 public:
-    IncrementalJsonWriter(const std::string& path, const std::vector<Normal>& normals) : out_(path, std::ios::out | std::ios::trunc) {
+    IncrementalJsonWriter(const std::string& path, const std::vector<Normal>& normals, bool return_all_minimal) : out_(path, std::ios::out | std::ios::trunc), return_all_minimal_(return_all_minimal) {
         if (!out_) {
             throw std::runtime_error("Failed to open output file");
         }
@@ -595,7 +602,7 @@ private:
         return p.x.num == 0 && p.y.num == 0;
     }
 
-    static void write_result_object(std::ostream& os, const std::vector<int>& counts, const BestRecord& record) {
+    void write_result_object(std::ostream& os, const std::vector<int>& counts, const BestRecord& record) {
         os << "    {\n";
         os << "      \"counts\": [";
         for (std::size_t j = 0; j < counts.size(); ++j) {
@@ -607,15 +614,12 @@ private:
         os << "],\n";
         os << "      \"regions\": " << record.regions << ",\n";
 
+        const auto& first_config = record.configs.front();
         os << "      \"seed_points\": [";
         bool first_seed = true;
-        for (const Point& seed : record.seeds) {
-            if (is_origin(seed)) {
-                continue;
-            }
-            if (!first_seed) {
-                os << ", ";
-            }
+        for (const Point& seed : first_config.seeds) {
+            if (seed.x.num == 0 && seed.y.num == 0) { continue; }
+            if (!first_seed) { os << ", "; }
             os << "[";
             write_json_string(os, seed.x.to_string());
             os << ", ";
@@ -626,26 +630,63 @@ private:
         os << "],\n";
 
         os << "      \"lines_by_dir\": [";
-        for (std::size_t d = 0; d < record.lines.size(); ++d) {
-            if (d > 0) {
-                os << ", ";
-            }
+        for (std::size_t d = 0; d < first_config.lines.size(); ++d) {
+            if (d > 0) { os << ", "; }
             os << "[";
-            for (std::size_t k = 0; k < record.lines[d].size(); ++k) {
-                if (k > 0) {
-                    os << ", ";
-                }
-                write_json_string(os, record.lines[d][k].to_string());
+            for (std::size_t k = 0; k < first_config.lines[d].size(); ++k) {
+                if (k > 0) { os << ", "; }
+                write_json_string(os, first_config.lines[d][k].to_string());
             }
             os << "]";
         }
-        os << "]\n";
+        os << "]";
+
+        if (return_all_minimal_) {
+            os << ",\n      \"configs\": [\n";
+            for (std::size_t c = 0; c < record.configs.size(); ++c) {
+                const auto& config = record.configs[c];
+                os << "        {\n";
+                os << "          \"seed_points\": [";
+                first_seed = true;
+                for (const Point& seed : config.seeds) {
+                    if (seed.x.num == 0 && seed.y.num == 0) { continue; }
+                    if (!first_seed) { os << ", "; }
+                    os << "[";
+                    write_json_string(os, seed.x.to_string());
+                    os << ", ";
+                    write_json_string(os, seed.y.to_string());
+                    os << "]";
+                    first_seed = false;
+                }
+                os << "],\n";
+                os << "          \"lines_by_dir\": [";
+                for (std::size_t d = 0; d < config.lines.size(); ++d) {
+                    if (d > 0) { os << ", "; }
+                    os << "[";
+                    for (std::size_t k = 0; k < config.lines[d].size(); ++k) {
+                        if (k > 0) { os << ", "; }
+                        write_json_string(os, config.lines[d][k].to_string());
+                    }
+                    os << "]";
+                }
+                os << "]\n";
+                os << "        }";
+                if (c + 1 < record.configs.size()) {
+                    os << ",";
+                }
+                os << "\n";
+            }
+            os << "      ]\n";
+        } else {
+            os << "\n";
+        }
         os << "    }";
     }
 
     std::ofstream out_;
     std::streampos footer_pos_{};
     bool has_results_ = false;
+    bool return_all_minimal_ = false;
 };
 
 struct VectorIntHash {
@@ -754,12 +795,14 @@ public:
     FinalizedResultCollector(
         std::vector<std::vector<int>> task_start_counts,
         BestMap initial_best,
-        IncrementalJsonWriter* writer
+        IncrementalJsonWriter* writer,
+        bool return_all_minimal
     )
         : task_start_counts_(std::move(task_start_counts)),
           task_finished_(task_start_counts_.size(), false),
           merged_(std::move(initial_best)),
-          writer_(writer) {
+          writer_(writer),
+          return_all_minimal_(return_all_minimal) {
         if (writer_ != nullptr) {
             for (const auto& entry : merged_) {
                 ensure_tracked_locked(entry.first);
@@ -790,6 +833,18 @@ public:
             auto it = merged_.find(counts);
             if (it == merged_.end() || record.regions < it->second.regions) {
                 merged_[counts] = std::move(record);
+            } else if (return_all_minimal_ && record.regions == it->second.regions) {
+                for (auto& config : record.configs) {
+                    bool dup = false;
+                    for (const auto& existing : it->second.configs) {
+                        if (config.lines == existing.lines && config.seeds == existing.seeds) {
+                            dup = true; break;
+                        }
+                    }
+                    if (!dup) {
+                        it->second.configs.push_back(std::move(config));
+                    }
+                }
             }
             if (writer_ != nullptr) {
                 ensure_tracked_locked(counts);
@@ -862,6 +917,7 @@ private:
     IncrementalJsonWriter* writer_ = nullptr;
     std::unordered_map<std::vector<int>, TrackState, VectorIntHash> tracked_;
     std::mutex mu_;
+    bool return_all_minimal_ = false;
 };
 
 class SharedVisited {
@@ -1079,7 +1135,8 @@ private:
     };
 
 public:
-    GreedyCutAllSolver(const std::vector<Normal>& normals, const std::vector<int>& max_counts) {
+    GreedyCutAllSolver(const std::vector<Normal>& normals, const std::vector<int>& max_counts, bool return_all_minimal = false)
+        : return_all_minimal_(return_all_minimal) {
         auto merged = merge_normals(normals, max_counts);
         normals_ = std::move(merged.first);
         max_counts_ = std::move(merged.second);
@@ -1136,7 +1193,7 @@ public:
         for (const SearchState& state : frontier) {
             frontier_start_counts.push_back(counts_from_lines(state.lines));
         }
-        FinalizedResultCollector collector(std::move(frontier_start_counts), std::move(prefix_best), writer);
+        FinalizedResultCollector collector(std::move(frontier_start_counts), std::move(prefix_best), writer, return_all_minimal_);
         if (frontier.empty()) {
             if (show_progress) {
                 std::cerr << "[progress] search completed during frontier expansion\n";
@@ -1185,7 +1242,7 @@ public:
         for (const SearchState& state : frontier) {
             frontier_start_counts.push_back(counts_from_lines(state.lines));
         }
-        FinalizedResultCollector collector(std::move(frontier_start_counts), std::move(prefix_best), writer);
+        FinalizedResultCollector collector(std::move(frontier_start_counts), std::move(prefix_best), writer, return_all_minimal_);
         if (frontier.empty()) {
             if (show_progress) {
                 std::cerr << "[progress] search completed during frontier expansion\n";
@@ -1218,7 +1275,7 @@ public:
 
         for (int w = 0; w < workers; ++w) {
             threads.emplace_back([&, w]() {
-                GreedyCutAllSolver worker_solver(normals_, max_counts_);
+                GreedyCutAllSolver worker_solver(normals_, max_counts_, return_all_minimal_);
                 while (true) {
                     std::size_t idx = next_index.fetch_add(1);
                     if (idx >= frontier.size()) {
@@ -1258,12 +1315,13 @@ private:
     std::unordered_set<StateKey, StateKeyHash> visited_;
     SharedVisited* shared_visited_ = nullptr;
     int shared_depth_limit_ = std::numeric_limits<int>::max();
+    bool return_all_minimal_ = false;
 
     std::unordered_map<DotKey, Rational, DotKeyHash> dot_cache_;
     std::unordered_map<InterKey, std::optional<Point>, InterKeyHash> intersection_cache_;
     std::vector<std::vector<PairCoeff>> pair_coeffs_;
 
-    static void record_into_map(
+    void record_into_map(
         BestMap& target,
         const std::vector<int>& counts,
         int regions,
@@ -1272,15 +1330,37 @@ private:
     ) {
         auto it = target.find(counts);
         if (it == target.end() || regions < it->second.regions) {
-            target[counts] = BestRecord{regions, lines, seeds};
+            target[counts] = BestRecord{regions, {{lines, seeds}}};
+        } else if (return_all_minimal_ && regions == it->second.regions) {
+            bool dup = false;
+            for (const auto& config : it->second.configs) {
+                if (config.lines == lines && config.seeds == seeds) {
+                    dup = true; break;
+                }
+            }
+            if (!dup) {
+                it->second.configs.push_back({lines, seeds});
+            }
         }
     }
 
-    static void merge_best_maps(BestMap& target, const BestMap& src) {
+    void merge_best_maps(BestMap& target, const BestMap& src) {
         for (const auto& [counts, record] : src) {
             auto it = target.find(counts);
             if (it == target.end() || record.regions < it->second.regions) {
                 target[counts] = record;
+            } else if (return_all_minimal_ && record.regions == it->second.regions) {
+                for (const auto& config : record.configs) {
+                    bool dup = false;
+                    for (const auto& existing : it->second.configs) {
+                        if (config.lines == existing.lines && config.seeds == existing.seeds) {
+                            dup = true; break;
+                        }
+                    }
+                    if (!dup) {
+                        it->second.configs.push_back(config);
+                    }
+                }
             }
         }
     }
@@ -1339,11 +1419,15 @@ private:
             Solution sol;
             sol.regions = record.regions;
             sol.normals = normals_;
-            sol.lines_by_dir = record.lines;
-            for (const auto& p : record.seeds) {
+            const auto& first_config = record.configs.front();
+            sol.lines_by_dir = first_config.lines;
+            for (const auto& p : first_config.seeds) {
                 if (!(p == origin())) {
                     sol.seed_points.push_back(p);
                 }
+            }
+            if (return_all_minimal_) {
+                sol.configs = record.configs;
             }
             result.push_back({counts, std::move(sol)});
         }
@@ -1409,21 +1493,26 @@ private:
             return {};
         }
 
-        std::unordered_map<MoveKey, MoveData, MoveKeyHash> candidates;
+        // 高速化：動的メモリ確保(unordered_map等)を減らすため、vectorとsort/uniqueを利用
+        std::vector<Move> moves;
         for (int i : active_dirs) {
             const auto& existing_offsets = state.lines[i];
-            std::unordered_set<Rational, RationalHash> candidate_offsets;
-            candidate_offsets.reserve(state.points.size() * 2 + 1);
+            std::vector<Rational> candidate_offsets;
+            candidate_offsets.reserve(state.points.size());
 
             for (const Point& p : state.points) {
                 Rational c = dot_at(i, p);
                 if (!contains_offset(existing_offsets, c)) {
-                    candidate_offsets.insert(c);
+                    candidate_offsets.push_back(c);
                 }
             }
             if (candidate_offsets.empty()) {
                 continue;
             }
+            
+            // 重複排除
+            std::sort(candidate_offsets.begin(), candidate_offsets.end());
+            candidate_offsets.erase(std::unique(candidate_offsets.begin(), candidate_offsets.end()), candidate_offsets.end());
 
             std::vector<int> other_lines;
             for (int j = 0; j < m_; ++j) {
@@ -1433,25 +1522,19 @@ private:
             }
 
             for (const Rational& c : candidate_offsets) {
-                std::unordered_set<Point, PointHash> new_points_set;
+                std::vector<Point> new_points;
                 for (int j : other_lines) {
                     for (const Rational& c2 : state.lines[j]) {
                         auto pt = intersection_at(i, c, j, c2);
                         if (pt.has_value()) {
-                            new_points_set.insert(*pt);
+                            new_points.push_back(*pt);
                         }
                     }
                 }
-                std::vector<Point> new_points(new_points_set.begin(), new_points_set.end());
+                // std::unordered_setを避け、vectorのsort & uniqueを利用
                 sort_and_unique_points(new_points);
-                candidates[MoveKey{i, c}] = MoveData{static_cast<int>(new_points.size()) + 1, std::move(new_points)};
+                moves.push_back(Move{i, c, static_cast<int>(new_points.size()) + 1, std::move(new_points)});
             }
-        }
-
-        std::vector<Move> moves;
-        moves.reserve(candidates.size());
-        for (auto& [key, data] : candidates) {
-            moves.push_back(Move{key.dir, key.c, data.delta, std::move(data.new_points)});
         }
         std::sort(moves.begin(), moves.end(), [](const Move& lhs, const Move& rhs) {
             if (lhs.delta != rhs.delta) {
@@ -1779,19 +1862,53 @@ void print_results_json(
 
         os << "      \"lines_by_dir\": [";
         for (std::size_t d = 0; d < sol.lines_by_dir.size(); ++d) {
-            if (d > 0) {
-                os << ", ";
-            }
+            if (d > 0) { os << ", "; }
             os << "[";
             for (std::size_t k = 0; k < sol.lines_by_dir[d].size(); ++k) {
-                if (k > 0) {
-                    os << ", ";
-                }
+                if (k > 0) { os << ", "; }
                 print_json_string(os, sol.lines_by_dir[d][k].to_string());
             }
             os << "]";
         }
-        os << "]\n";
+        os << "]";
+
+        if (!sol.configs.empty()) {
+            os << ",\n      \"configs\": [\n";
+            for (std::size_t c = 0; c < sol.configs.size(); ++c) {
+                const auto& config = sol.configs[c];
+                os << "        {\n";
+                os << "          \"seed_points\": [";
+                bool first_seed = true;
+                for (const Point& seed : config.seeds) {
+                    if (seed.x.num == 0 && seed.y.num == 0) { continue; }
+                    if (!first_seed) { os << ", "; }
+                    os << "[";
+                    print_json_string(os, seed.x.to_string());
+                    os << ", ";
+                    print_json_string(os, seed.y.to_string());
+                    os << "]";
+                    first_seed = false;
+                }
+                os << "],\n";
+                os << "          \"lines_by_dir\": [";
+                for (std::size_t d = 0; d < config.lines.size(); ++d) {
+                    if (d > 0) { os << ", "; }
+                    os << "[";
+                    for (std::size_t k = 0; k < config.lines[d].size(); ++k) {
+                        if (k > 0) { os << ", "; }
+                        print_json_string(os, config.lines[d][k].to_string());
+                    }
+                    os << "]";
+                }
+                os << "]\n";
+                os << "        }";
+                if (c + 1 < sol.configs.size()) { os << ","; }
+                os << "\n";
+            }
+            os << "      ]\n";
+        } else {
+            os << "\n";
+        }
         os << "    }";
         if (i + 1 < results.size()) {
             os << ",";
@@ -1830,11 +1947,12 @@ int main(int argc, char* argv[]) {
         int threads = parse_optional_positive_int(root, "threads", 1);
         int split_depth = parse_optional_nonnegative_int(root, "split_depth", 0);
         bool progress = parse_optional_bool(root, "progress", stderr_is_tty());
+        bool return_all_minimal = parse_optional_bool(root, "return_all_minimal", false);
 
-        GreedyCutAllSolver solver(normals, max_counts);
+        GreedyCutAllSolver solver(normals, max_counts, return_all_minimal);
         std::optional<IncrementalJsonWriter> incremental_writer;
         if (argc == 3) {
-            incremental_writer.emplace(argv[2], solver.merged_normals());
+            incremental_writer.emplace(argv[2], solver.merged_normals(), return_all_minimal);
         }
 
         auto results = (threads > 1)

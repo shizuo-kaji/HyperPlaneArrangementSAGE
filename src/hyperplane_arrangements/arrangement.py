@@ -110,6 +110,9 @@ class HyperplaneArrangement(SageObject):
         else:
             raise ValueError('provide either matrix ``mat`` or defining polynomial ``Q``.')
 
+        if not self.K.is_field():
+            raise ValueError("The base ring must be a field.")
+
         ## parameters
         self.multiplicity = multiplicity
         self.num_planes = self.mat.nrows() # number of hyperplanes in the arrangement
@@ -146,6 +149,24 @@ class HyperplaneArrangement(SageObject):
                 ])
         rows.append([base_field(0), base_field(0), base_field(1)])  # H_infty: z = 0
         return cls(matrix(base_field, rows))
+
+    @classmethod
+    def yoshinaga_multi_bound(cls, normals, lines_by_dir, base_field=QQ):
+        r"""Compute the Yoshinaga multi-arrangement bound ``(1 + d_1)(1 + d_2)``.
+
+        Builds the 2D central multi-arrangement from ``normals`` with multiplicities
+        given by the lengths of offsets in ``lines_by_dir``, computes its multi-minimal
+        generators, and returns the bound from their degrees ``d_1, d_2``.
+        """
+        normals = list(normals)
+        lines_by_dir = list(lines_by_dir)
+        if len(normals) != len(lines_by_dir):
+            raise ValueError('normals and lines_by_dir must have the same length')
+        rows = [[base_field(int(a)), base_field(int(b))] for a, b in normals]
+        counts = [len(offsets) for offsets in lines_by_dir]
+        arr = cls(matrix(base_field, rows), multiplicity=counts)
+        d1, d2 = arr.compute_multi_minimal_generators().degrees()
+        return (1 + int(d1)) * (1 + int(d2))
 
     @cached_method
     def euler(self):
@@ -298,6 +319,8 @@ class HyperplaneArrangement(SageObject):
         S1 = self.S**1
         M = []
         for alpha, m in zip(self.linear_forms(), self.multiplicity):
+            if m == 0:
+                continue
             RM = Sequence([module_elem(S1, (alpha.derivative(self.v[j]),))
                            for j in range(self.n)] + [module_elem(S1, (alpha**m,))])
             M.append(matrix([u[:-1] for u in syz(RM)]))

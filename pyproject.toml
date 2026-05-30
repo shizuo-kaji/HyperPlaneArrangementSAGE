@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hyperplane-arrangements"
-version = "0.1.0"
+version = "0.2.0"
 description = "Logarithmic vector fields for convex hyperplane arrangements"
 readme = "README.md"
 authors = [{name = "Maple Hyperplane Team"}]

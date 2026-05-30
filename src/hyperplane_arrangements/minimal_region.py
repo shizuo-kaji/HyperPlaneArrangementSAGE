@@ -66,15 +66,46 @@ def dot(n: Normal, p: Point) -> Fraction:
 
 
 @dataclass(frozen=True)
+class SolutionConfig:
+    r"""A specific geometric configuration of a minimal-chamber affine arrangement.
+
+    Attributes:
+        lines_by_dir: Offsets of the lines grouped by direction.
+        seed_points: The set of seed points used to build the arrangement.
+        generators_by_dir: Minimal generating set of lines for the constructive closure.
+    """
+    lines_by_dir: Tuple[Tuple[Fraction, ...], ...]
+    seed_points: Tuple[Point, ...]
+    generators_by_dir: Tuple[Tuple[Fraction, ...], ...]
+
+@dataclass(frozen=True)
 class Solution:
+    r"""The collection of minimal-chamber affine line arrangements for a fixed multiset of directions.
+
+    Attributes:
+        regions: The minimal chamber count ``\chi(A)``.
+        normals: The distinct direction normal vectors ``\alpha_i``.
+        lines_by_dir: Offsets of the lines grouped by direction (for the primary representative).
+        seed_points: The set of seed points used to build the primary representative.
+        generators_by_dir: Minimal generating set of lines (giving ``s(A)``) for the primary representative.
+        configs: Tuple of all minimal configuration variants found (only populated by the C++ solver when requested).
+    """
     regions: int
     normals: Tuple[Normal, ...]
     lines_by_dir: Tuple[Tuple[Fraction, ...], ...]
     seed_points: Tuple[Point, ...]
     generators_by_dir: Tuple[Tuple[Fraction, ...], ...]
+    configs: Tuple[SolutionConfig, ...] = ()
 
 
 class GreedyCutAllSolver:
+    r"""Computes the minimal chamber count ``minchamber(P, m)`` via a greedy depth-first search.
+
+    The solver starts from a trivial arrangement and incrementally adds lines
+    in available directions (up to ``max_counts``). It explores the tree of "legal moves"
+    (placing a new line through existing intersection points) and occasionally
+    introduces new "seed points" when saturated.
+    """
     def __init__(
         self,
         normals: Iterable[Tuple[int, int]],
@@ -110,15 +141,19 @@ class GreedyCutAllSolver:
         self._dfs(empty_lines, self.initial_seed, self.initial_seed, 1)
         result: Dict[Tuple[int, ...], Solution] = {}
         for counts, (regions, lines, seeds) in self.best_for_counts.items():
+            if all(c == 0 for c in counts):
+                continue
             lines_sorted = tuple(tuple(sorted(s)) for s in lines)
             seed_points = tuple(sorted(p for p in seeds if p not in self.initial_seed))
             generators_by_dir = find_generators(self.normals, lines_sorted)
+            config = SolutionConfig(lines_sorted, seed_points, generators_by_dir)
             result[counts] = Solution(
                 int(regions),
                 self.normals,
                 lines_sorted,
                 seed_points,
                 generators_by_dir,
+                configs=(config,),
             )
         return result
 
@@ -692,6 +727,8 @@ def read_json(path: str) -> Dict[Tuple[int, ...], Solution]:
     results: Dict[Tuple[int, ...], Solution] = {}
     for entry in payload.get("results", []):
         counts = tuple(int(x) for x in entry["counts"])
+        if all(c == 0 for c in counts):
+            continue
         lines_by_dir = tuple(
             tuple(Fraction(offset) for offset in offsets)
             for offsets in entry["lines_by_dir"]
@@ -709,12 +746,29 @@ def read_json(path: str) -> Dict[Tuple[int, ...], Solution]:
             )
             if len(generators_by_dir) != len(lines_by_dir):
                 raise ValueError("generators_by_dir and lines_by_dir must have the same length")
+        configs_list = []
+        if "configs" in entry:
+            for cfg in entry["configs"]:
+                c_lines = tuple(
+                    tuple(Fraction(offset) for offset in offsets)
+                    for offsets in cfg["lines_by_dir"]
+                )
+                c_seeds = tuple(_point_from_texts(point) for point in cfg.get("seed_points", []))
+                # compute generators on the fly
+                c_gens = find_generators(normals, c_lines)
+                configs_list.append(SolutionConfig(c_lines, c_seeds, c_gens))
+
+        # fallback if configs not present
+        if not configs_list:
+            configs_list.append(SolutionConfig(lines_by_dir, seed_points, generators_by_dir))
+
         results[counts] = Solution(
             regions=int(entry["regions"]),
             normals=normals,
             lines_by_dir=lines_by_dir,
             seed_points=seed_points,
             generators_by_dir=generators_by_dir,
+            configs=tuple(configs_list),
         )
 
     return dict(sorted(results.items()))
@@ -787,7 +841,7 @@ def format_solution(sol: Solution) -> None:
             print(f"  c = {c}")
 
 
-def plot_solution(sol: Solution, margin: float = 1.0) -> None:
+def plot_solution(sol: Solution, margin: float = 1.0, title: Optional[str] = None) -> None:
     intersections: List[Point] = []
     for i in range(len(sol.normals)):
         for c1 in sol.lines_by_dir[i]:
@@ -830,7 +884,10 @@ def plot_solution(sol: Solution, margin: float = 1.0) -> None:
 
     plt.xlim(min_x, max_x)
     plt.ylim(min_y, max_y)
-    plt.title(f"Min Regions = {sol.regions}")
+    if title:
+        plt.title(title)
+    elif plt.title is None:
+        plt.title(f"Min Regions = {sol.regions}")
     plt.grid(True, linestyle=":", alpha=0.3)
     plt.show()
 
@@ -841,18 +898,25 @@ import os
 from pathlib import Path
 
 class CppGreedyCutAllSolver:
+    r"""Python wrapper for the high-performance C++ multithreaded minimal-chamber solver.
+
+    Functions identically to :class:`GreedyCutAllSolver` but delegates the DFS to an external
+    C++ executable for massive speedups on larger ``(P, m)`` problems (e.g., ``B_2`` with ``p >= 4``).
+    """
     def __init__(
         self,
         normals: Iterable[Tuple[int, int]],
         max_counts: Iterable[int],
         threads: int = 1,
         split_depth: int = 0,
+        return_all_minimal: bool = False,
         solver_path: Optional[str] = None
     ) -> None:
-        self.normals = list(normals)
-        self.max_counts = list(max_counts)
-        self.threads = threads
-        self.split_depth = split_depth
+        self.normals = [(int(a), int(b)) for a, b in normals]
+        self.max_counts = [int(x) for x in max_counts]
+        self.threads = int(threads)
+        self.split_depth = int(split_depth)
+        self.return_all_minimal = return_all_minimal
 
         if solver_path is None:
             # default path relative to this file
@@ -872,7 +936,8 @@ class CppGreedyCutAllSolver:
             "normals": self.normals,
             "max_counts": self.max_counts,
             "threads": self.threads,
-            "split_depth": self.split_depth
+            "split_depth": self.split_depth,
+            "return_all_minimal": self.return_all_minimal
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -886,4 +951,3 @@ class CppGreedyCutAllSolver:
             subprocess.run([self.solver_path, in_path, out_path], check=True)
 
             return read_json(out_path)
-

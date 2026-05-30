@@ -418,7 +418,7 @@ def test_multi_arrangement_restriction():
     B = A.restriction(3)
     assert B.multiplicity is not None
     MG = B.compute_multi_minimal_generators()
-    assert MG.degrees() == [2, 2, 2]
+    assert MG.degrees() == [2, 2, 2, 2]
 
 
 # --- Notebook cell 32: deletion then restriction ---
@@ -509,3 +509,23 @@ def test_near_pencil_max_deg():
         A = HyperplaneArrangement(mat)
         assert A.num_planes == p
         assert max(A.degrees()) <= p - n + 1
+
+
+def test_multi_arrangement_all_counts_one_dim3():
+    mat = matrix(QQ, coordinate_vectors(3) + [[1, 1, 1], [1, -1, 0]])
+    A = HyperplaneArrangement(mat)
+    A_multi = HyperplaneArrangement(mat, multiplicity=[1] * A.num_planes)
+    
+    expected_degrees = A.degrees()
+    multi_gens = A_multi.compute_multi_minimal_generators()
+    assert multi_gens.degrees() == expected_degrees
+
+
+def test_multi_arrangement_all_counts_one_dim4():
+    mat = matrix(QQ, coordinate_vectors(4) + [[1, 1, 1, 1], [1, -1, 1, -1]])
+    A = HyperplaneArrangement(mat)
+    A_multi = HyperplaneArrangement(mat, multiplicity=[1] * A.num_planes)
+    
+    expected_degrees = A.degrees()
+    multi_gens = A_multi.compute_multi_minimal_generators()
+    assert multi_gens.degrees() == expected_degrees

@@ -119,4 +119,4 @@ def module_intersection(modules):
     for mod in modules[1:]:
         result = singular.singular_function('intersect')(result, mod.transpose())
 
-    return _seq_to_matrix(minbase(result)).transpose()
+    return _seq_to_matrix(minbase(result))

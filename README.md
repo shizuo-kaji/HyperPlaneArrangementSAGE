@@ -107,24 +107,6 @@ The notebooks in `notebooks/` also add the repository `src/` directory to `sys.p
 - `notebooks/`: active Jupyter notebooks.
 - `tests/`: pytest suite for the Sage package.
 
-Basic usage:
-
-```python
-from hyperplane_arrangements import HyperplaneArrangement
-
-A = HyperplaneArrangement([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
-
-# Get the vector field module containing minimal generators
-mod = A.minimal_generators()
-
-# Inspect degrees and free resolution
-print(mod.gendic())
-print(A.free_resolution())
-
-# Work natively with VectorField objects
-A.plot(mod.gens[1], xlim=(-2, 2), ylim=(-2, 2))
-```
-
 ## Testing
 
 Inside a Sage-enabled environment, run:
@@ -156,7 +138,7 @@ See the active notebooks under `notebooks/`:
 
 - **`notebooks/vector_field_reconstruction.ipynb`**
   - Demonstrates vector field reconstruction from synthetic data
-  - Junyan Chu, Shizuo Kaji: Polynomial Interpolation of a Vector Field on a Convex Polygonal Domain, arXiv:2602.01803
+  - Junyan Chu, Shizuo Kaji: Polynomial Interpolation of a Vector Field on a Convex Polygonal Domain, [arXiv:2602.01803](https://arxiv.org/abs/2602.01803)
 
 - **`notebooks/vector_field_reconstruction_3d.ipynb`**
   - Extends the reconstruction workflow to three-dimensional examples.
@@ -173,3 +155,4 @@ See the active notebooks under `notebooks/`:
 - **`notebooks/MinimalRegionPlaneCut.ipynb`**
   - Minimal region plane cut solver.
   - Generates exact reachable count tuples for minimal regions.
+  - Shizuo Kaji, Shota Maehara, and Hiroki Sasaki: Cut the Plane, preprint
