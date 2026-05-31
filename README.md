@@ -15,6 +15,16 @@ This repository provides tools for:
 - Working with homogeneous bounded-degree modules of polynomial vector fields
 - Fitting polynomial vector fields to velocity and vorticity data on polyhedral domains using least-squares methods
 
+## Differences from Sage's built-in `HyperplaneArrangements`
+
+SageMath comes with a built-in `sage.geometry.hyperplane_arrangement` module. While that module provides excellent tools for the combinatorial geometry of arrangements (e.g., intersection posets, chamber counting, and characteristic polynomials), this custom `hyperplane_arrangements` package extends Sage's capabilities with a heavy focus on the **algebraic and computational aspects of vector fields**:
+
+1. **Logarithmic Derivation Modules**: Explicit OOP modeling of $D(A)$ via `VectorField` and `VectorFieldModule`. It directly computes minimal generators, syzygies, and algebraic derivations (divergence, rotation, dehomogenization), which are absent in native Sage.
+2. **Data-Driven Reconstruction**: Dedicated pipelines (`fit.py`, `tangential_field.py`) to fit polynomial vector fields to boundary velocity or vorticity data and reconstruct arrangements from synthetic flows.
+3. **Advanced Freeness & Invariants**: Implementations of Saito's criterion, the constructive closure ($\langle B \rangle_k$), and the $s$-invariant ($s_k(A)$). Native support for multi-arrangements and the Yoshinaga bound.
+4. **Minimal Region Solver**: A pure-Python and C++ hybrid combinatorial solver (`minimal_region.py`) that searches for the optimal plane offsets minimizing the number of chambers for a given set of directions, well beyond just counting regions of a fixed arrangement.
+5. **Seamless Integration**: While this package is built independently, the `HyperplaneArrangement` class natively wraps and delegates to Sage's built-in arrangement object. This allows you to transparently call standard Sage combinatorial methods (such as `poincare_polynomial()`, `matroid()`, `regions()`, and `is_essential()`) directly on instances of our custom class, combining the best of both worlds.
+
 ## Prerequisites
 
 To use this module, you need SageMath with Jupyter support.

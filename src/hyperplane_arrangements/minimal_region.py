@@ -18,6 +18,9 @@ ORIGIN: Point = (ZERO, ZERO)
 
 
 def normalize_normal(nx: int, ny: int) -> Normal:
+    r"""
+    Normalize a normal vector.
+    """
     if nx == 0 and ny == 0:
         raise ValueError("Normal (0,0) is invalid")
     g = gcd(abs(nx), abs(ny))
@@ -33,6 +36,9 @@ def merge_normals(
     normals: Iterable[Tuple[int, int]],
     max_counts: Iterable[int],
 ) -> Tuple[List[Normal], List[int]]:
+    r"""
+    Merge and normalize a list of normals.
+    """
     normals = list(normals)
     max_counts = list(max_counts)
     if len(normals) != len(max_counts):
@@ -49,6 +55,9 @@ def merge_normals(
 
 
 def intersection(n1: Normal, c1: Fraction, n2: Normal, c2: Fraction) -> Optional[Point]:
+    r"""
+    Compute the intersection of two lines/planes.
+    """
     a1, b1 = n1
     a2, b2 = n2
     det = a1 * b2 - a2 * b1
@@ -60,6 +69,9 @@ def intersection(n1: Normal, c1: Fraction, n2: Normal, c2: Fraction) -> Optional
 
 
 def dot(n: Normal, p: Point) -> Fraction:
+    r"""
+    Compute the dot product.
+    """
     a, b = n
     x, y = p
     return a * x + b * y
@@ -111,6 +123,9 @@ class GreedyCutAllSolver:
         normals: Iterable[Tuple[int, int]],
         max_counts: Iterable[int],
     ) -> None:
+        r"""
+        Initialize the object.
+        """
         normals, max_counts = merge_normals(normals, max_counts)
         self.normals: Tuple[Normal, ...] = tuple(normals)
         self.max_counts: Tuple[int, ...] = tuple(max_counts)
@@ -137,6 +152,13 @@ class GreedyCutAllSolver:
                 self._pair_coeffs[(i, j)] = (a1, b1, a2, b2, det)
 
     def solve_all(self) -> Dict[Tuple[int, ...], Solution]:
+        r"""
+        Solve and explore all legal configurations.
+
+        OUTPUT:
+
+        - A dictionary or result structure containing minimal configurations.
+        """
         empty_lines = tuple(frozenset() for _ in range(self.m))
         self._dfs(empty_lines, self.initial_seed, self.initial_seed, 1)
         result: Dict[Tuple[int, ...], Solution] = {}
@@ -164,11 +186,17 @@ class GreedyCutAllSolver:
         lines: Tuple[frozenset[Fraction], ...],
         seeds: frozenset[Point],
     ) -> None:
+        r"""
+        Internal helper method `_record`.
+        """
         current = self.best_for_counts.get(counts)
         if current is None or regions < current[0]:
             self.best_for_counts[counts] = (regions, lines, seeds)
 
     def _dot_at(self, i: int, p: Point) -> Fraction:
+        r"""
+        Internal helper method `_dot_at`.
+        """
         key = (i, p)
         if key in self._dot_cache:
             return self._dot_cache[key]
@@ -179,6 +207,9 @@ class GreedyCutAllSolver:
         return val
 
     def _intersection_at(self, i: int, c: Fraction, j: int, c2: Fraction) -> Optional[Point]:
+        r"""
+        Internal helper method `_intersection_at`.
+        """
         if i < j:
             key = (i, c, j, c2)
             ii, jj = i, j
@@ -208,6 +239,9 @@ class GreedyCutAllSolver:
         counts: Tuple[int, ...],
         seeds: frozenset[Point],
     ) -> Optional[Point]:
+        r"""
+        Internal helper method `_next_seed_point`.
+        """
         active_dirs = [i for i in range(self.m) if counts[i] < self.max_counts[i]]
         if not active_dirs:
             return None
@@ -260,6 +294,9 @@ class GreedyCutAllSolver:
         seeds: frozenset[Point],
         regions: int,
     ) -> None:
+        r"""
+        Internal helper method `_dfs`.
+        """
         state_key = (lines, seeds)
         if state_key in self.visited:
             return
@@ -326,6 +363,9 @@ class GreedyCutAllSolver:
 def _line_entries_from_arrangement(
     lines_by_dir: Tuple[Tuple[Fraction, ...], ...],
 ) -> Tuple[Tuple[Tuple[int, Fraction], ...], Dict[Tuple[int, Fraction], int]]:
+    r"""
+    Internal helper method `_line_entries_from_arrangement`.
+    """
     line_entries: List[Tuple[int, Fraction]] = []
     index_by_line: Dict[Tuple[int, Fraction], int] = {}
     for i, offsets in enumerate(lines_by_dir):
@@ -367,14 +407,23 @@ def _point_masks_from_arrangement(
     normals: Tuple[Normal, ...],
     line_entries: Tuple[Tuple[int, Fraction], ...],
 ) -> Tuple[int, ...]:
+    r"""
+    Internal helper method `_point_masks_from_arrangement`.
+    """
     return tuple(_points_with_masks(normals, line_entries).values())
 
 
 def _popcount(mask: int) -> int:
+    r"""
+    Internal helper method `_popcount`.
+    """
     return bin(mask).count("1")
 
 
 def _closure_mask(initial_mask: int, point_masks: Tuple[int, ...]) -> int:
+    r"""
+    Internal helper method `_closure_mask`.
+    """
     active = initial_mask
     changed = True
     while changed:
@@ -394,6 +443,9 @@ def _mask_to_lines_by_dir(
     line_entries: Tuple[Tuple[int, Fraction], ...],
     num_dirs: int,
 ) -> Tuple[Tuple[Fraction, ...], ...]:
+    r"""
+    Internal helper method `_mask_to_lines_by_dir`.
+    """
     grouped: List[List[Fraction]] = [[] for _ in range(num_dirs)]
     for idx, (i, c) in enumerate(line_entries):
         if mask & (1 << idx):
@@ -406,6 +458,9 @@ def generate_subarrangement(
     lines_by_dir: Tuple[Tuple[Fraction, ...], ...],
     generators_by_dir: Tuple[Tuple[Fraction, ...], ...],
 ) -> Tuple[Tuple[Fraction, ...], ...]:
+    r"""
+    Generate a subarrangement from generators.
+    """
     if len(normals) != len(lines_by_dir):
         raise ValueError("normals and lines_by_dir must have the same length")
     if len(generators_by_dir) != len(lines_by_dir):
@@ -429,6 +484,9 @@ def find_generators(
     normals: Tuple[Normal, ...],
     lines_by_dir: Tuple[Tuple[Fraction, ...], ...],
 ) -> Tuple[Tuple[Fraction, ...], ...]:
+    r"""
+    Find generators for the given arrangement.
+    """
     if len(normals) != len(lines_by_dir):
         raise ValueError("normals and lines_by_dir must have the same length")
 
@@ -441,6 +499,9 @@ def find_generators(
     closure_cache: Dict[int, int] = {}
 
     def closure(mask: int) -> int:
+        r"""
+        Compute the closure of the given indices.
+        """
         cached = closure_cache.get(mask)
         if cached is not None:
             return cached
@@ -488,6 +549,9 @@ def find_generators(
 
 
 def with_generators(sol: Solution) -> Solution:
+    r"""
+    Yield subarrangements with their generators.
+    """
     return Solution(
         regions=sol.regions,
         normals=sol.normals,
@@ -498,6 +562,9 @@ def with_generators(sol: Solution) -> Solution:
 
 
 def generator_size(sol: Solution) -> int:
+    r"""
+    Return the size of the generator set.
+    """
     return sum(len(offsets) for offsets in sol.generators_by_dir)
 
 
@@ -574,6 +641,9 @@ def s_invariant(
 
 
 def _det(a: Normal, b: Normal) -> int:
+    r"""
+    Internal helper method `_det`.
+    """
     return a[0] * b[1] - a[1] * b[0]
 
 
@@ -672,19 +742,31 @@ def saturation_lower_bound(N: int, n: int) -> Fraction:
 # --------- Utility helpers ---------
 
 def _fraction_to_text(value: Fraction) -> str:
+    r"""
+    Internal helper method `_fraction_to_text`.
+    """
     return str(value)
 
 
 def _point_to_texts(point: Point) -> List[str]:
+    r"""
+    Internal helper method `_point_to_texts`.
+    """
     return [_fraction_to_text(point[0]), _fraction_to_text(point[1])]
 
 
 def _point_from_texts(values: Iterable[str]) -> Point:
+    r"""
+    Internal helper method `_point_from_texts`.
+    """
     x_text, y_text = values
     return (Fraction(x_text), Fraction(y_text))
 
 
 def write_json(path: str, results: Dict[Tuple[int, ...], Solution]) -> None:
+    r"""
+    Write results to a JSON file.
+    """
     items = sorted(results.items())
     normals: Tuple[Normal, ...] = ()
     if items:
@@ -719,6 +801,9 @@ def write_json(path: str, results: Dict[Tuple[int, ...], Solution]) -> None:
 
 
 def read_json(path: str) -> Dict[Tuple[int, ...], Solution]:
+    r"""
+    Read results from a JSON file.
+    """
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)
 
@@ -775,6 +860,9 @@ def read_json(path: str) -> Dict[Tuple[int, ...], Solution]:
 
 
 def write_csv(path: str, results: Dict[Tuple[int, ...], Solution]) -> None:
+    r"""
+    Write results to a CSV file.
+    """
     rows_by_n: Dict[int, List[Tuple[Tuple[int, ...], Solution]]] = {}
     for counts, sol in sorted(results.items()):
         if len(counts) != 4:
@@ -824,6 +912,9 @@ def write_csv(path: str, results: Dict[Tuple[int, ...], Solution]) -> None:
 
 
 def format_solution(sol: Solution) -> None:
+    r"""
+    Format the solution for display.
+    """
     print(f"Min regions = {sol.regions}")
     print(f"generator size s(A) = {generator_size(sol)}")
     for normal, offsets in zip(sol.normals, sol.generators_by_dir):
@@ -842,6 +933,9 @@ def format_solution(sol: Solution) -> None:
 
 
 def plot_solution(sol: Solution, margin: float = 1.0, title: Optional[str] = None) -> None:
+    r"""
+    Plot the solution.
+    """
     intersections: List[Point] = []
     for i in range(len(sol.normals)):
         for c1 in sol.lines_by_dir[i]:
@@ -912,6 +1006,9 @@ class CppGreedyCutAllSolver:
         return_all_minimal: bool = False,
         solver_path: Optional[str] = None
     ) -> None:
+        r"""
+        Initialize the object.
+        """
         self.normals = [(int(a), int(b)) for a, b in normals]
         self.max_counts = [int(x) for x in max_counts]
         self.threads = int(threads)
@@ -926,6 +1023,13 @@ class CppGreedyCutAllSolver:
             self.solver_path = solver_path
 
     def solve_all(self) -> Dict[Tuple[int, ...], Solution]:
+        r"""
+        Solve and explore all legal configurations.
+
+        OUTPUT:
+
+        - A dictionary or result structure containing minimal configurations.
+        """
         if not os.path.exists(self.solver_path) or not os.access(self.solver_path, os.X_OK):
             raise RuntimeError(
                 f"C++ solver executable not found or not executable at {self.solver_path}. "

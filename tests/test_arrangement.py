@@ -82,6 +82,35 @@ def test_constructive_closure_is_trivial_in_rank_two():
     assert A.s_invariant() == 3
 
 
+def test_constructive_closure_Lk_parameter():
+    # R^4: boolean e0..e3 plus v = e0 + e1 (idx 4) and w = e2 + e3 (idx 5)
+    A = HyperplaneArrangement(matrix(QQ, [
+        [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1],
+        [1, 1, 0, 0], [0, 0, 1, 1],
+    ]))
+    # L_2: the pair (e0, e1) spans a rank-2 flat contained in v -> v is pulled in
+    assert A.constructive_closure_indices([0, 1], k=2) == (0, 1, 4)
+    # L_3: two hyperplanes cannot form a rank-3 flat, so the closure is trivial
+    assert A.constructive_closure_indices([0, 1], k=3) == (0, 1)
+    assert A.constructive_closure_indices([0, 1, 2, 3], k=2) == (0, 1, 2, 3, 4, 5)
+    assert A.constructively_generates([0, 1, 2, 3], k=2)
+    # default k == n - 1 == 3 (historical behaviour preserved)
+    assert A.s_invariant() == A.s_invariant(3)
+
+
+def test_s_invariant_depends_on_k():
+    # rank-2 arrangement embedded in R^4: every normal lies in span(e0, e1)
+    A = HyperplaneArrangement(matrix(QQ, [
+        [1, 0, 0, 0], [0, 1, 0, 0], [1, 1, 0, 0], [1, -1, 0, 0],
+    ]))
+    # L_2: any two independent hyperplanes span the whole rank-2 flat -> all four
+    assert A.constructive_closure_indices([0, 1], k=2) == (0, 1, 2, 3)
+    assert A.s_invariant(2) == 2
+    # L_3: there is no rank-3 flat at all, so nothing is ever pulled in
+    assert A.s_invariant(3) == 4
+    assert A.s_invariant() == 4  # default k = n - 1 = 3
+
+
 def test_intersection_lattice_basic_central_arrangement():
     A = HyperplaneArrangement(matrix(QQ, [[1, 0], [0, 1], [1, 1]]))
     L = A.intersection_lattice()

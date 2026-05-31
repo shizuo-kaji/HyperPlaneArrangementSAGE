@@ -2,6 +2,7 @@
 # ruff: noqa
 # pylint: skip-file
 import itertools
+import warnings
 from copy import copy
 from fractions import Fraction
 from typing import List, Dict, Tuple, Union, Optional, Any, Iterable
@@ -49,10 +50,18 @@ from .utils import (
     create_generic_arrangement,
 )
 from .vector_field import VectorField, VectorFieldModule
+from .minimal_region_nd import _to_fraction as _mr_to_fraction
 
 singular_lib('presolve.lib')
 syz = singular_function("syz")
 ideal = Ideal
+
+from collections import namedtuple
+
+MinimalArrangementResult = namedtuple(
+    'MinimalArrangementResult',
+    ['normals', 'offsets_by_dir', 'A_min', 'regions', 'chamber', 'is_A_minimal', 'solution'],
+)
 
 class HyperplaneArrangement(SageObject):
     r"""
@@ -62,6 +71,9 @@ class HyperplaneArrangement(SageObject):
 
     def __init__(self, mat=None, *, vertices=None, multiplicity=None, Q=None,
                  base_field=QQ, vertex_max_denominator=10**6):
+        r"""
+        Initialize the object.
+        """
         provided = sum(x is not None for x in (mat, Q, vertices))
         if provided != 1:
             raise ValueError('provide exactly one of ``mat``, ``vertices``, or defining polynomial ``Q``.')
@@ -151,6 +163,346 @@ class HyperplaneArrangement(SageObject):
         return cls(matrix(base_field, rows))
 
     @classmethod
+    def cone_of_arrangement(cls, normals, offsets_by_dir, base_field=QQ):
+        r"""Central cone ``c(B)`` in ``R^{ell+1}`` of an affine arrangement ``B`` in ``R^ell``.
+
+        General-dimension analogue of :meth:`cone_of_lines`.  ``B`` is given in the
+        pure-Python representation of :mod:`minimal_region_nd`: ``normals[i]`` is an
+        integer ``ell``-vector ``alpha`` and ``offsets_by_dir[i]`` lists the offsets
+        ``c`` of the hyperplanes ``{alpha . x = c}``.
+
+        Each such hyperplane cones to the central hyperplane in ``R^{ell+1}``
+
+        .. math:: -c\,x_0 + \alpha_1 x_1 + \dots + \alpha_\ell x_\ell = 0,
+
+        with the cone coordinate ``x_0`` **prepended**, and the infinity hyperplane
+        ``H_0 = \{x_0 = 0\}`` is appended.  With this convention ``x_0`` is exactly
+        the restriction coordinate, so
+
+            ``cone_of_arrangement(P, B).restriction(0)``  recovers  ``(P, m)``,
+
+        matching the setup of ``doc/minimumregion_conjecture.tex``.  Consequently
+        ``chamber(c(B)) = 2 * r(B)`` where ``r(B)`` is the number of regions of ``B``.
+        """
+        normals = list(normals)
+        offsets_by_dir = list(offsets_by_dir)
+        if len(normals) != len(offsets_by_dir):
+            raise ValueError('normals and offsets_by_dir must have the same length')
+        if not normals:
+            raise ValueError('at least one direction is required')
+        ell = len(tuple(normals[0]))
+        rows = []
+        for alpha, offsets in zip(normals, offsets_by_dir):
+            for c in offsets:
+                cc = _mr_to_fraction(c)
+                x0_coeff = base_field(-cc.numerator) / base_field(cc.denominator)
+                rows.append([x0_coeff] + [base_field(int(a)) for a in alpha])
+        rows.append([base_field(1)] + [base_field(0)] * ell)  # H_0 = {x_0 = 0}
+        return cls(matrix(base_field, rows))
+
+    @classmethod
+    def n_regions_of_arrangement(cls, normals, offsets_by_dir, base_field=QQ):
+        r"""Number of regions ``r(B)`` of the affine arrangement ``B`` in ``R^ell``
+        via Sage's built-in ``HyperplaneArrangements.n_regions()``.
+
+        Independent cross-check for :func:`minimal_region_nd.region_count_nd`.
+        Note ``chamber(c(B)) = 2 * r(B)`` (cf. :meth:`cone_of_arrangement`).
+        """
+        from sage.geometry.hyperplane_arrangement.arrangement import HyperplaneArrangements
+        normals = list(normals)
+        offsets_by_dir = list(offsets_by_dir)
+        ell = len(tuple(normals[0]))
+        Hs = HyperplaneArrangements(base_field, tuple('x%d' % i for i in range(ell)))
+        gens = Hs.gens()
+        planes = []
+        for alpha, offsets in zip(normals, offsets_by_dir):
+            lin = sum(base_field(int(a)) * g for a, g in zip(alpha, gens))
+            for c in offsets:
+                cc = _mr_to_fraction(c)
+                const = base_field(cc.numerator) / base_field(cc.denominator)
+                planes.append(lin - const)
+        if not planes:
+            return 1
+        return int(Hs(planes).n_regions())
+
+    def n_regions(self, base_field=None):
+        r"""Number of chambers of this (central) arrangement via Sage's
+        ``HyperplaneArrangements.n_regions()``.
+
+        For a central arrangement ``A = c(B)`` this equals ``chamber(A) = 2 r(B)``;
+        used by :meth:`minimal_arrangement` to test whether ``A`` is minimal.
+        """
+        return int(self._sage_arrangement(base_field=base_field).n_regions())
+
+    @cached_method
+    def _sage_arrangement(self, base_field=None):
+        r"""Convert this arrangement to a native Sage HyperplaneArrangements object.
+        
+        Issues a warning if the arrangement has multiplicities, because native
+        Sage HyperplaneArrangements generally do not support multi-arrangements
+        in most combinatorial operations.
+        """
+        if self.multiplicity is not None and any(m > 1 for m in self.multiplicity):
+            warnings.warn(
+                "This arrangement has multiplicities > 1. "
+                "Native Sage HyperplaneArrangements combinatorial methods "
+                "may ignore these multiplicities.",
+                UserWarning
+            )
+
+        from sage.geometry.hyperplane_arrangement.arrangement import HyperplaneArrangements
+        K = base_field if base_field is not None else self.K
+        Hs = HyperplaneArrangements(K, tuple(str(v) for v in self.v))
+        gens = Hs.gens()
+        planes = [sum(self.mat[i, j] * gens[j] for j in range(self.n))
+                  for i in range(self.num_planes)]
+        if not planes:
+            return Hs([])
+        return Hs(planes)
+
+    # --- Wrapper methods for native Sage functionality ---
+    
+    def matroid(self):
+        r"""
+        Return the matroid by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().matroid()
+        
+    def orlik_solomon_algebra(self, *args, **kwargs):
+        r"""
+        Return the orlik_solomon_algebra by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().orlik_solomon_algebra(*args, **kwargs)
+        
+    def orlik_terao_algebra(self, *args, **kwargs):
+        r"""
+        Return the orlik_terao_algebra by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().orlik_terao_algebra(*args, **kwargs)
+        
+    def poincare_polynomial(self):
+        r"""
+        Return the poincare_polynomial by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().poincare_polynomial()
+        
+    def primitive_eulerian_polynomial(self, *args, **kwargs):
+        r"""
+        Return the primitive_eulerian_polynomial by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().primitive_eulerian_polynomial(*args, **kwargs)
+        
+    def whitney_number(self, *args, **kwargs):
+        r"""
+        Return the whitney_number by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().whitney_number(*args, **kwargs)
+        
+    def doubly_indexed_whitney_number(self, *args, **kwargs):
+        r"""
+        Return the doubly_indexed_whitney_number by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().doubly_indexed_whitney_number(*args, **kwargs)
+        
+    def varchenko_matrix(self, *args, **kwargs):
+        r"""
+        Return the varchenko_matrix by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().varchenko_matrix(*args, **kwargs)
+        
+    def is_essential(self):
+        r"""
+        Return the is_essential by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().is_essential()
+        
+    def essentialization(self):
+        r"""
+        Return the essentialization by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().essentialization()
+        
+    def is_simplicial(self):
+        r"""
+        Return the is_simplicial by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().is_simplicial()
+        
+    def is_formal(self):
+        r"""
+        Return the is_formal by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().is_formal()
+        
+    def center(self):
+        r"""
+        Return the center by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().center()
+        
+    def has_good_reduction(self):
+        r"""
+        Return the has_good_reduction by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().has_good_reduction()
+        
+    def regions(self):
+        r"""
+        Return the regions by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().regions()
+        
+    def bounded_regions(self):
+        r"""
+        Return the bounded_regions by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().bounded_regions()
+        
+    def unbounded_regions(self):
+        r"""
+        Return the unbounded_regions by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().unbounded_regions()
+        
+    def n_bounded_regions(self):
+        r"""
+        Return the n_bounded_regions by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().n_bounded_regions()
+        
+    def poset_of_regions(self):
+        r"""
+        Return the poset_of_regions by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().poset_of_regions()
+        
+    def closed_faces(self):
+        r"""
+        Return the closed_faces by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().closed_faces()
+        
+    def face_vector(self):
+        r"""
+        Return the face_vector by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().face_vector()
+        
+    def distance_between_regions(self, u, v):
+        r"""
+        Return the distance_between_regions by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().distance_between_regions(u, v)
+        
+    def sign_vector(self, p):
+        r"""
+        Return the sign_vector by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().sign_vector(p)
+        
+    def is_separating_hyperplane(self, H, u, v):
+        r"""
+        Return the is_separating_hyperplane by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
+        return self._sage_arrangement().is_separating_hyperplane(H, u, v)
+
+    @classmethod
     def yoshinaga_multi_bound(cls, normals, lines_by_dir, base_field=QQ):
         r"""Compute the Yoshinaga multi-arrangement bound ``(1 + d_1)(1 + d_2)``.
 
@@ -170,25 +522,67 @@ class HyperplaneArrangement(SageObject):
 
     @cached_method
     def euler(self):
+        r"""
+        Return the Euler vector field.
+
+        OUTPUT:
+
+        - A :class:`VectorField` representing the Euler vector field.
+        """
         return VectorField(vector(self.v), self.S)
 
     @cached_method
     def jacob_I(self):
+        r"""
+        Return the Jacobian ideal of the defining polynomial.
+
+        OUTPUT:
+
+        - An ideal generated by the partial derivatives of the defining polynomial.
+        """
         return ideal(*[self.Q.derivative(self.v[j]) for j in range(self.n)])
 
     @cached_method
     def syz(self):
+        r"""
+        Return the syzygy module of the Jacobian ideal.
+        """
         M = self.minimal_generators()[0].v.parent()
         return M.submodule(self.jacob_I().syzygy_module())
 
     @cached_method
     def minimal_generators(self):
         # compute minimal generators of D(A) by D(A) \cong <Euler> \oplus Syz(J_Q)
+        r"""
+        Return the minimal generators of the logarithmic derivation module D(A).
+
+        OUTPUT:
+
+        - A :class:`VectorFieldModule` containing the minimal generators.
+
+        EXAMPLES::
+
+        sage: from hyperplane_arrangements.arrangement import HyperplaneArrangement
+        sage: A = HyperplaneArrangement(matrix(QQ, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+        sage: len(A.minimal_generators())
+        3
+        """
         gens = [self.euler()] + [self.euler_complement(u) for u in minbase(self.jacob_I().syzygy_module())]
         return VectorFieldModule(gens)
 
     @cached_method
     def vf_dimension(self, k):
+        r"""
+        Compute the vector field dimension at a given degree.
+
+        INPUT:
+
+        - ``k`` -- Integer degree.
+
+        OUTPUT:
+
+        - The dimension of the vector field module at degree ``k``.
+        """
         fr = self.syz().graded_free_resolution()
         d = self.n - 1
         dim = 0
@@ -202,18 +596,51 @@ class HyperplaneArrangement(SageObject):
 
     @cached_method
     def degrees(self):
+        r"""
+        Return the degrees (exponents) of the minimal generators.
+
+        OUTPUT:
+
+        - A tuple of integers representing the degrees.
+
+        EXAMPLES::
+
+        sage: from hyperplane_arrangements.arrangement import HyperplaneArrangement
+        sage: A = HyperplaneArrangement(matrix(QQ, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+        sage: A.degrees()
+        (1, 1, 1)
+        """
         return self.minimal_generators().degrees()
 
     @property
     def is_free(self):
+        r"""
+        Return whether the arrangement is free.
+
+        An arrangement is free if its logarithmic derivation module D(A) is a free module.
+
+        OUTPUT:
+
+        - ``True`` if free, ``False`` otherwise.
+        """
         return len(self.degrees()) == self.n
 
     @cached_method
     def linear_forms(self):
+        r"""
+        Return the linear forms defining the hyperplanes.
+
+        OUTPUT:
+
+        - A list of linear forms.
+        """
         return [sum(self.mat[i, j]*self.v[j] for j in range(self.n)) for i in range(self.num_planes)]
 
     @staticmethod
     def _matrix_from_vertices(vertices, *, base_field=QQ, max_denominator=10**6):
+        r"""
+        Internal helper method `_matrix_from_vertices`.
+        """
         if ConvexHull is None:
             raise ImportError('scipy.spatial.ConvexHull is required for vertex initialisation')
         try:
@@ -269,6 +696,9 @@ class HyperplaneArrangement(SageObject):
 
     @staticmethod
     def _coerce_vertex_scalar(value, base_field, max_denominator):
+        r"""
+        Internal helper method `_coerce_vertex_scalar`.
+        """
         if hasattr(value, 'parent'):
             try:
                 return base_field(value)
@@ -281,6 +711,9 @@ class HyperplaneArrangement(SageObject):
 
     @staticmethod
     def _normalise_plane_row(coeffs, base_field):
+        r"""
+        Internal helper method `_normalise_plane_row`.
+        """
         if base_field != QQ:
             return coeffs
 
@@ -309,6 +742,17 @@ class HyperplaneArrangement(SageObject):
         return [base_field(sign * num) for num in numerators]
 
     def is_in_DA(self, gv):
+        r"""
+        Check if a given vector field is in D(A).
+
+        INPUT:
+
+        - ``gv`` -- The vector field to check.
+
+        OUTPUT:
+
+        - ``True`` if it belongs to D(A), ``False`` otherwise.
+        """
         for i in range(self.num_planes):
             gva = sum([self.mat[i, j]*gv[j] for j in range(len(gv))])
             if gva not in Ideal(self.linear_forms()[i]):
@@ -316,6 +760,13 @@ class HyperplaneArrangement(SageObject):
         return True
 
     def compute_multi_minimal_generators(self):
+        r"""
+        Compute minimal generators for a multi-arrangement.
+
+        OUTPUT:
+
+        - A :class:`VectorFieldModule` containing the minimal generators.
+        """
         S1 = self.S**1
         M = []
         for alpha, m in zip(self.linear_forms(), self.multiplicity):
@@ -327,15 +778,24 @@ class HyperplaneArrangement(SageObject):
         return VectorFieldModule(list(module_intersection(M)))
 
     def free_resolution(self):
+        r"""
+        Compute the graded free resolution of D(A).
+        """
         M = self.minimal_generators()[0].v.parent()
         return M.submodule([g.v for g in self.minimal_generators()]).graded_free_resolution()
 
     def relations(self):
+        r"""
+        Return the relations (syzygies) among the minimal generators of D(A).
+        """
         mg = [g.v for g in self.minimal_generators()]
         return syz(Sequence([module_elem(self.S**self.n, tuple(mg[i]))
                              for i in range(len(mg))]))
 
     def euler_complement(self, g, alpha=None):
+        r"""
+        Return the complement of the Euler vector field.
+        """
         if alpha is None:
             ag = self.v[-1]
         elif isinstance(alpha, Vector):  # alpha as a covector
@@ -350,6 +810,17 @@ class HyperplaneArrangement(SageObject):
         return VectorField(g - ag(*tuple(g)) // ag * self.euler().v, self.S)
 
     def restriction(self, ind_or_H):
+        r"""
+        Return the restricted arrangement A^H.
+
+        INPUT:
+
+        - ``ind_or_H`` -- Index or normal vector of the hyperplane to restrict to.
+
+        OUTPUT:
+
+        - A :class:`HyperplaneArrangement` representing the restriction.
+        """
         B = copy(self.mat)
         if isinstance(ind_or_H, (int, Integer)):
             H = B[ind_or_H]
@@ -369,7 +840,63 @@ class HyperplaneArrangement(SageObject):
             B[t] *= sgn(B[t, c])
         return HyperplaneArrangement(B, multiplicity=multiplicity)
 
+    def minimal_arrangement(self, H=0, *, max_seed_radius=6, base_field=None):
+        r"""Find a minimal configuration for the restriction ``(P, m) = A^H``.
+
+        Given this central arrangement ``A`` in ``R^{ell+1}`` and a restriction
+        plane ``H`` (index or normal vector; default the first hyperplane,
+        intended to be ``H_0 = \{x_0 = 0\}``), compute the restriction
+        multi-arrangement ``(P, m) = A^H``, search ``Arr(P, m)`` for a
+        minimal-chamber affine arrangement ``B_min`` in ``R^ell``, and return its
+        cone ``A_min = c(B_min)`` together with whether the *given* ``A`` is
+        itself minimal.
+
+        Implements the setup of ``doc/minimumregion_conjecture.tex``.  The heavy
+        combinatorics live in the pure-Python :mod:`minimal_region_nd`; this
+        method only marshals the Sage data (restriction, cone, region count).
+
+        Returns a :class:`MinimalArrangementResult` with fields ``normals``,
+        ``offsets_by_dir`` (of ``B_min``), ``A_min`` (a
+        :class:`HyperplaneArrangement`), ``regions`` ``= r(B_min)``, ``chamber``
+        ``= 2 * regions = chamber(A_min)``, ``is_A_minimal``
+        (``chamber(A) == chamber(A_min)``), and the underlying ``solution``.
+
+        Note: for ``ell >= 3`` the search is a heuristic (see
+        :class:`minimal_region_nd.GreedyCutAllSolverND`); the returned ``chamber``
+        is an upper bound on ``minchamber(P, m)`` -- validate small instances with
+        :func:`minimal_region_nd.assert_greedy_optimal`.
+        """
+        from . import minimal_region_nd as _mrnd
+
+        P = self.restriction(H)
+        normals = [tuple(int(x) for x in row) for row in P.mat.rows()]
+        if P.multiplicity is not None:
+            max_counts = [int(x) for x in P.multiplicity]
+        else:
+            max_counts = [1] * P.num_planes
+
+        sol = _mrnd.solve_minimal_nd(normals, max_counts, max_seed_radius=max_seed_radius)
+
+        bf = base_field if base_field is not None else self.K
+        A_min = HyperplaneArrangement.cone_of_arrangement(
+            sol.normals, sol.offsets_by_dir, base_field=bf
+        )
+        chamber = 2 * sol.regions
+        is_A_minimal = (self.n_regions(base_field=bf) == chamber)
+        return MinimalArrangementResult(
+            normals=sol.normals,
+            offsets_by_dir=sol.offsets_by_dir,
+            A_min=A_min,
+            regions=sol.regions,
+            chamber=chamber,
+            is_A_minimal=is_A_minimal,
+            solution=sol,
+        )
+
     def localisation(self, L):
+        r"""
+        Return the localization of the arrangement.
+        """
         I = Ideal(*[a.dot_product(self.euler().v) for a in self.mat[L, :]])
         indices = []
         for i, a in enumerate(self.mat):
@@ -378,9 +905,19 @@ class HyperplaneArrangement(SageObject):
         return HyperplaneArrangement(self.mat[indices, :])
 
     def deletion(self, L):
+        r"""
+        Return the deletion of the arrangement by the given rows.
+
+        INPUT:
+
+        - ``L`` -- Indices of the hyperplanes to delete.
+        """
         return HyperplaneArrangement(self.mat.delete_rows(L))
 
     def _coerce_hyperplane_indices(self, subset) -> Tuple[int, ...]:
+        r"""
+        Internal helper method `_coerce_hyperplane_indices`.
+        """
         if isinstance(subset, (int, Integer)):
             indices = [int(subset)]
         else:
@@ -400,6 +937,9 @@ class HyperplaneArrangement(SageObject):
         return tuple(sorted(normalised))
 
     def _subarrangement_from_indices(self, indices: Iterable[int]):
+        r"""
+        Internal helper method `_subarrangement_from_indices`.
+        """
         rows = list(indices)
         multiplicity = None if self.multiplicity is None else [self.multiplicity[i] for i in rows]
         if not rows:
@@ -407,58 +947,88 @@ class HyperplaneArrangement(SageObject):
         return HyperplaneArrangement(self.mat[rows, :], multiplicity=multiplicity)
 
     @cached_method
-    def _hyperplanes_containing_rank_n_minus_1_flat(self, indices: Tuple[int, ...]) -> Tuple[int, ...]:
-        if len(indices) != self.n - 1:
-            raise ValueError(f'expected {self.n - 1} indices, got {len(indices)}.')
+    def _hyperplanes_containing_independent_flat(self, indices: Tuple[int, ...]) -> Tuple[int, ...]:
+        r"""Indices of every hyperplane of ``A`` containing the flat spanned by
+        ``indices``, provided those rows are linearly independent.
 
+        Independent ``indices`` of length ``k`` span a rank-``k`` flat ``X``
+        (codimension ``k``); the hyperplanes containing ``X`` are exactly those
+        whose normal lies in ``rowspace(X)``.  Returns ``()`` when the rows are
+        dependent (they then span a lower-rank flat, which is not the rank-``k``
+        flat being enumerated).
+        """
         submat = self.mat[list(indices), :]
-        if submat.rank() != self.n - 1:
+        if submat.rank() != len(indices):
             return tuple()
 
         row_space = submat.row_space()
         return tuple(i for i, row in enumerate(self.mat.rows()) if row in row_space)
 
-    def constructive_closure_indices(self, subset) -> Tuple[int, ...]:
-        r"""Return the indices of the constructive closure ``\langle B \rangle_A``."""
-        current = set(self._coerce_hyperplane_indices(subset))
-        target_rank = self.n - 1
+    def _resolve_closure_rank(self, k: Optional[int]) -> int:
+        r"""Default the closure rank ``k`` to ``n - 1`` and validate it."""
+        if k is None:
+            k = self.n - 1
+        k = int(k)
+        if k < 0:
+            raise ValueError('k must be a non-negative integer')
+        return k
 
-        if target_rank <= 0 or len(current) < target_rank:
+    def constructive_closure_indices(self, subset, k: Optional[int] = None) -> Tuple[int, ...]:
+        r"""Indices of the constructive closure ``\langle B \rangle_A`` using ``L_k``.
+
+        ``\langle B \rangle_A`` is the smallest set with ``B \subseteq \langle B
+        \rangle_A`` such that for every rank-``k`` flat ``X \in L_k(\langle B
+        \rangle_A)`` and every ``H \in A`` with ``X \subset H`` one has ``H \in
+        \langle B \rangle_A`` (the closure of ``doc/minimumregion_conjecture.tex``,
+        which uses ``k = 2``).
+
+        ``k`` defaults to ``n - 1`` (the historical behaviour, which coincides
+        with the doc's ``L_2`` only when ``n = 3``).  **Pass ``k = 2`` for the
+        minimal-region conjecture in any dimension.**
+        """
+        k = self._resolve_closure_rank(k)
+        current = set(self._coerce_hyperplane_indices(subset))
+
+        if k <= 0 or len(current) < k:
             return tuple(sorted(current))
 
         while True:
             snapshot = tuple(sorted(current))
             updated = set(current)
-            for flat_indices in itertools.combinations(snapshot, target_rank):
-                updated.update(self._hyperplanes_containing_rank_n_minus_1_flat(flat_indices))
+            for flat_indices in itertools.combinations(snapshot, k):
+                updated.update(self._hyperplanes_containing_independent_flat(flat_indices))
                 if len(updated) == self.num_planes:
                     return tuple(range(self.num_planes))
             if updated == current:
                 return tuple(sorted(current))
             current = updated
 
-    def constructive_closure(self, subset, return_indices: bool = False):
-        r"""Return the constructive closure ``\langle B \rangle_A`` as a subarrangement."""
-        indices = self.constructive_closure_indices(subset)
+    def constructive_closure(self, subset, return_indices: bool = False, k: Optional[int] = None):
+        r"""Return the constructive closure ``\langle B \rangle_A`` (using ``L_k``)."""
+        indices = self.constructive_closure_indices(subset, k=k)
         closure = self._subarrangement_from_indices(indices)
         if return_indices:
             return closure, indices
         return closure
 
-    def constructively_generates(self, subset) -> bool:
-        r"""Check whether ``subset`` constructively generates the full arrangement."""
-        return self.constructive_closure_indices(subset) == tuple(range(self.num_planes))
+    def constructively_generates(self, subset, k: Optional[int] = None) -> bool:
+        r"""Whether ``subset`` constructively generates the full arrangement (``L_k``)."""
+        return self.constructive_closure_indices(subset, k=k) == tuple(range(self.num_planes))
 
-    def minimal_constructive_subset_indices(self, max_size: Optional[int] = None) -> Tuple[int, ...]:
-        r"""Return a minimum-cardinality subset ``B`` with ``A = \langle B \rangle_A``."""
+    def minimal_constructive_subset_indices(self, max_size: Optional[int] = None,
+                                            k: Optional[int] = None) -> Tuple[int, ...]:
+        r"""A minimum-cardinality subset ``B`` with ``A = \langle B \rangle_A`` (using ``L_k``)."""
+        k = self._resolve_closure_rank(k)
         full_indices = tuple(range(self.num_planes))
         if self.num_planes == 0:
             return full_indices
 
-        if self.n <= 2 or self.num_planes < self.n - 1:
+        # A subset smaller than k carries no rank-k flat, so its closure is itself;
+        # hence a generating set has size >= k (or is the whole arrangement).
+        if k <= 1 or self.num_planes < k:
             min_size = self.num_planes
         else:
-            min_size = self.n - 1
+            min_size = k
 
         upper = self.num_planes if max_size is None else min(int(max_size), self.num_planes)
         if upper < min_size:
@@ -466,24 +1036,35 @@ class HyperplaneArrangement(SageObject):
 
         for size in range(min_size, upper + 1):
             for subset in itertools.combinations(full_indices, size):
-                if self.constructive_closure_indices(subset) == full_indices:
+                if self.constructive_closure_indices(subset, k=k) == full_indices:
                     return subset
 
         raise ValueError(f'no constructively generating subset found up to size {upper}.')
 
-    def minimal_constructive_subset(self, max_size: Optional[int] = None, return_indices: bool = False):
-        r"""Return a minimum-cardinality constructive generating subarrangement."""
-        indices = self.minimal_constructive_subset_indices(max_size=max_size)
+    def minimal_constructive_subset(self, max_size: Optional[int] = None,
+                                    return_indices: bool = False, k: Optional[int] = None):
+        r"""A minimum-cardinality constructive generating subarrangement (using ``L_k``)."""
+        indices = self.minimal_constructive_subset_indices(max_size=max_size, k=k)
         subset = self._subarrangement_from_indices(indices)
         if return_indices:
             return subset, indices
         return subset
 
-    def s_invariant(self, max_size: Optional[int] = None) -> int:
-        r"""Return ``s(A)``, the minimum size of a constructive generating subset."""
-        return len(self.minimal_constructive_subset_indices(max_size=max_size))
+    def s_invariant(self, k: Optional[int] = None, max_size: Optional[int] = None) -> int:
+        r"""Return ``s_k(A)``: the minimum size of a subset generating ``A`` under the
+        ``L_k`` constructive closure.
+
+        ``s(A)`` of ``doc/minimumregion_conjecture.tex`` is ``s_2(A)`` -- call
+        ``A.s_invariant(2)``.  ``k`` defaults to ``n - 1`` (historical behaviour,
+        equal to ``L_2`` only when ``n = 3``), so existing no-argument calls are
+        unchanged.
+        """
+        return len(self.minimal_constructive_subset_indices(max_size=max_size, k=k))
 
     def addition(self, mat):
+        r"""
+        Return the addition of a hyperplane to the arrangement.
+        """
         if isinstance(mat, list):
             return HyperplaneArrangement(self.mat.stack(vector(mat)))
         else:
@@ -501,13 +1082,20 @@ class HyperplaneArrangement(SageObject):
         from sage.combinat.posets.posets import Poset
 
         if self.num_planes == 0:
-            return Poset([tuple()])
+            return Poset({tuple(): []})
 
         rows = list(self.mat.rows())
         closure_cache = {tuple(): tuple()}
         rank_cache = {tuple(): 0}
 
         def closure(indices):
+            r"""
+            Return the closure by delegating to Sage's native HyperplaneArrangements.
+
+            OUTPUT:
+
+            - Relies on the native Sage implementation output.
+            """
             key = tuple(sorted(indices))
             if key in closure_cache:
                 return closure_cache[key]
@@ -542,8 +1130,40 @@ class HyperplaneArrangement(SageObject):
         elements = tuple(sorted(flats, key=lambda f: (rank_cache.get(f, len(f)), len(f), f)))
         return Poset((elements, lambda a, b: set(a).issubset(set(b))))
 
+    def characteristic_polynomial(self):
+        r"""
+        Return the characteristic polynomial of the arrangement.
+        
+        The characteristic polynomial is defined as
+        `\chi_A(t) = \sum_{X \in L(A)} \mu(\hat{0}, X) t^{\dim X}`,
+        where `L(A)` is the intersection lattice and `\mu` is its Möbius function.
+        """
+        L = self.intersection_lattice()
+        
+        R = PolynomialRing(ZZ, 't')
+        t = R.gen()
+        
+        if not L:
+            return R.zero()
+            
+        zero = L.bottom()
+        poly = R.zero()
+        
+        for x in L:
+            mu = L.moebius_function(zero, x)
+            if mu == 0:
+                continue
+            rk = self.mat[list(x), :].rank() if x else 0
+            dim = self.n - rk
+            poly += mu * t**dim
+            
+        return poly
+
     @cached_method
     def is_spog(self) -> Union[bool, List[int]]:
+        r"""
+        Check if the arrangement is SPOG.
+        """
         fr = self.free_resolution()
         if fr._length != 2:
             return False
@@ -569,6 +1189,9 @@ class HyperplaneArrangement(SageObject):
         return sorted(degs) + [level]
 
     def level_coeff(self):
+        r"""
+        Return the level coefficients.
+        """
         spog_res = self.is_spog()
         if not spog_res:
             raise ValueError('the given arrangement is not SPOG.')
@@ -584,12 +1207,22 @@ class HyperplaneArrangement(SageObject):
         return (LHS, RHS)
 
     def search_free_addition(self, a_range=range(-10, 10), b_range=range(-10, 10)):
+        r"""
+        Search for a free addition to the arrangement within a given range.
+        """
         plane = None
         found = False
         try:
             from tqdm.auto import tqdm
         except ImportError:
             def tqdm(iterable, *args, **kwargs):
+                r"""
+                Return the tqdm by delegating to Sage's native HyperplaneArrangements.
+
+                OUTPUT:
+
+                - Relies on the native Sage implementation output.
+                """
                 return iterable
         for a in tqdm(a_range):
             if found:
@@ -809,6 +1442,9 @@ class HyperplaneArrangement(SageObject):
 
     @staticmethod
     def _to_vector(g):
+        r"""
+        Internal helper method `_to_vector`.
+        """
         if isinstance(g, VectorField):
             return g.v
         if hasattr(g, 'parent'):
@@ -1202,6 +1838,9 @@ class HyperplaneArrangement(SageObject):
         return result
 
     def determinant_ideal(self, verbose=False):
+        r"""
+        Return the determinant ideal.
+        """
         m = matrix([g.v for g in self.minimal_generators()])
         I = []
         for i in range(self.n - 1, m.nrows()):
@@ -1224,6 +1863,9 @@ class HyperplaneArrangement(SageObject):
 
     def plot(self, u=None, xlim=None, ylim=None, Obs=None, ax=None, levels=0,
              quiver=True, cmap="coolwarm", nx=30, ny=30, scale=None, legend=True, offset=5):
+        r"""
+        Plot the arrangement.
+        """
         if self.n not in [2, 3]:
             raise ValueError('plot works only for two or three dimensional arrangements')
 
@@ -1320,12 +1962,21 @@ class HyperplaneArrangement(SageObject):
         return ax
 
     def plot_arr(self, **kwargs):
+        r"""
+        Plot the hyperplanes of the arrangement.
+        """
         return self.plot(u=None, **kwargs)
 
     def plot_vfield(self, u, **kwargs):
+        r"""
+        Plot a vector field.
+        """
         return self.plot(u=u, **kwargs)
 
     def _line_ends(self,alpha,xlim=None,ylim=None):
+        r"""
+        Internal helper method `_line_ends`.
+        """
         if xlim is None:
             xlim=(-1,1)
         if ylim is None:
@@ -1342,6 +1993,9 @@ class HyperplaneArrangement(SageObject):
         return [(-c/a,q) if b==0 else (p,(-c-a*p)/b) for p,q in zip(xlim,(ylim[1],ylim[0]))]
 
     def list_ntf2(self, i):
+        r"""
+        List near-to-free arrangements.
+        """
         results = {}
         B = self.deletion([i])
         if B.is_free:
@@ -1362,6 +2016,9 @@ class HyperplaneArrangement(SageObject):
         return results
 
     def compute_basis(self, k0):
+        r"""
+        Compute the basis of the vector field module.
+        """
         mat = self.mat
         k = k0 - 1
         p = mat.nrows()
@@ -1395,6 +2052,9 @@ class HyperplaneArrangement(SageObject):
         return VectorFieldModule(basis)
 
     def compute_basis_linear(self, max_k=None, verbose=True):
+        r"""
+        Compute the linear basis of the vector field module.
+        """
         mat = self.mat
         p = mat.nrows()
         n = mat.ncols()
@@ -1435,6 +2095,9 @@ class HyperplaneArrangement(SageObject):
         return VectorFieldModule(MG)
 
     def compute_basis_syzygy(self, verbose=True):
+        r"""
+        Compute the syzygy basis of the vector field module.
+        """
         mat = self.mat
         p = mat.nrows()
         n = mat.ncols()
@@ -1492,5 +2155,8 @@ class HyperplaneArrangement(SageObject):
         return VectorFieldModule(GEN_vec)
 
     def fit_given_min_error(self, P, e0, verbose=True):
+        r"""
+        Fit the vector field given a minimum error threshold.
+        """
         from .fit import given_min_error as _given_min_error
         return _given_min_error(self, P, e0, verbose=verbose)

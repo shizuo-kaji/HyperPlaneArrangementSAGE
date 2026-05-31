@@ -21,3 +21,9 @@ classifiers = [
 [project.urls]
 Homepage = "https://example.com/hyperplane-arrangements"
 Documentation = "https://doc.sagemath.org/"
+
+[tool.pytest.ini_options]
+# Only the formal suite under tests/ is collected; ad-hoc experiment scripts in
+# experiment_minimum_region/ (test_*.py / scratch_*.py) are NOT pytest tests.
+testpaths = ["tests"]
+norecursedirs = ["experiment_minimum_region", "old_backup", "src", ".git", ".serena"]

@@ -1,20 +1,51 @@
-# Python
-__pycache__
-backend/__pycache__/
-backend/venv/
+# Python / SageMath
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
 
-dist
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# C++ Build outputs
+src/hyperplane_arrangements/cpp/**/*.o
+src/hyperplane_arrangements/cpp/**/*.out
+src/hyperplane_arrangements/cpp/**/*.a
+src/hyperplane_arrangements/cpp/**/*.dylib
+src/hyperplane_arrangements/cpp/**/*.so
+src/hyperplane_arrangements/cpp/**/*.dSYM/
+src/hyperplane_arrangements/cpp/**/solver
+
+# User Requested Exclusions
+old_backup/
+doc/
+experiment_minimum_region/
+
+# Node modules / Web legacy
+node_modules/
 dist-ssr
 *.local
 
-# Node modules
-node_modules/
-
-# Build output
-build/
-
 # Logs
-logs
+logs/
 backend/logs/
 *.log
 npm-debug.log*
@@ -25,12 +56,17 @@ lerna-debug.log*
 
 # OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
+.idea/
 *.suo
 *.ntvs*
 *.njsproj

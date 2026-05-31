@@ -4,6 +4,7 @@ from .arrangement import HyperplaneArrangement
 from .vector_field import VectorField, VectorFieldModule
 from .tangential_field import ConvexPolygonFlow, Vortex
 from .minimal_region import GreedyCutAllSolver, CppGreedyCutAllSolver, Solution
+from . import library
 
 __all__ = [
     'HyperplaneArrangement',
@@ -14,4 +15,5 @@ __all__ = [
     'GreedyCutAllSolver',
     'CppGreedyCutAllSolver',
     'Solution',
+    'library',
 ]

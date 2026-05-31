@@ -14,21 +14,40 @@ class VectorField(SageObject):
     A class representing a polynomial vector field.
     """
     def __init__(self, u, S=None):
+        r"""
+        Initialize the object.
+        """
         from sage.structure.element import Vector
         self._u = u if isinstance(u, Vector) else vector(u)
         self.S = S if S is not None else self._u.parent().base_ring()
 
     @property
     def v(self):
+        r"""
+        Return the v by delegating to Sage's native HyperplaneArrangements.
+
+        OUTPUT:
+
+        - Relies on the native Sage implementation output.
+        """
         return self._u
 
     def __len__(self):
+        r"""
+        Standard Python `__len__` method.
+        """
         return len(self._u)
 
     def __getitem__(self, item):
+        r"""
+        Standard Python `__getitem__` method.
+        """
         return self._u[item]
 
     def __iter__(self):
+        r"""
+        Standard Python `__iter__` method.
+        """
         return iter(self._u)
 
     def __getattr__(self, name):
@@ -36,36 +55,63 @@ class VectorField(SageObject):
         return getattr(self._u, name)
 
     def __add__(self, other):
+        r"""
+        Standard Python `__add__` method.
+        """
         if isinstance(other, VectorField):
             return VectorField(self._u + other._u, self.S)
         return VectorField(self._u + other, self.S)
 
     def __radd__(self, other):
+        r"""
+        Standard Python `__radd__` method.
+        """
         return self + other
 
     def __sub__(self, other):
+        r"""
+        Standard Python `__sub__` method.
+        """
         if isinstance(other, VectorField):
             return VectorField(self._u - other._u, self.S)
         return VectorField(self._u - other, self.S)
 
     def __mul__(self, other):
         # Scalar multiplication
+        r"""
+        Standard Python `__mul__` method.
+        """
         return VectorField(self._u * other, self.S)
 
     def __rmul__(self, other):
+        r"""
+        Standard Python `__rmul__` method.
+        """
         return VectorField(other * self._u, self.S)
 
     def __truediv__(self, other):
+        r"""
+        Standard Python `__truediv__` method.
+        """
         return VectorField(self._u / other, self.S)
 
     def _repr_(self):
+        r"""
+        Internal helper method `_repr_`.
+        """
         return repr(self._u)
 
     def _latex_(self):
+        r"""
+        Internal helper method `_latex_`.
+        """
         from sage.misc.latex import latex
         return latex(self._u)
 
     def degree(self):
+        r"""
+        Return the degree of the vector field.
+        """
         return max(m.degree() for m in self._u)
 
     def divergence(self):
@@ -121,20 +167,35 @@ class VectorFieldModule(SageObject):
     A class representing a module of vector fields.
     """
     def __init__(self, generators):
+        r"""
+        Initialize the object.
+        """
         self.gens = [g if isinstance(g, VectorField) else VectorField(g) for g in generators]
 
     def __iter__(self):
+        r"""
+        Standard Python `__iter__` method.
+        """
         return iter(self.gens)
 
     def __len__(self):
+        r"""
+        Standard Python `__len__` method.
+        """
         return len(self.gens)
 
     def __getitem__(self, item):
+        r"""
+        Standard Python `__getitem__` method.
+        """
         if isinstance(item, slice):
             return VectorFieldModule(self.gens[item])
         return self.gens[item]
 
     def _repr_(self):
+        r"""
+        Internal helper method `_repr_`.
+        """
         return f"Module of Vector Fields with {len(self.gens)} generators"
 
     def degrees(self):
@@ -265,6 +326,9 @@ class VectorFieldModule(SageObject):
         return MatrixArgs(QQ, len(Sk1_dic)*n, len(self.gens)*n, entries=L).matrix()
 
     def _differential_free(self, op, n_comp):
+        r"""
+        Internal helper method `_differential_free`.
+        """
         if not self.gens:
             return VectorFieldModule([])
 
@@ -288,6 +352,9 @@ class VectorFieldModule(SageObject):
         return VectorFieldModule([sum(a[i]*self.gens[i] for i in range(len(self.gens))) for a in ker])
 
     def _flatten_scalars(self, C, Sk_dic, n_comp):
+        r"""
+        Internal helper method `_flatten_scalars`.
+        """
         ngens = len(next(iter(Sk_dic)))
         L = {}
         for j, u in enumerate(C):
@@ -299,12 +366,21 @@ class VectorFieldModule(SageObject):
         return MatrixArgs(QQ, len(Sk_dic), len(C), entries=L).matrix()
 
     def divergence_free(self):
+        r"""
+        Return divergence-free vector fields from a basis.
+        """
         return self._differential_free(lambda u: u.divergence(), 1)
 
     def rotation_free(self):
+        r"""
+        Return rotation-free vector fields from a basis.
+        """
         return self._differential_free(lambda u: u.curl(), 1)
 
     def harmonic(self):
+        r"""
+        Return harmonic vector fields from a basis.
+        """
         n = len(self.gens[0].S.gens())
         return self._differential_free(lambda u: u.laplacian(), n - 1)
 

@@ -58,6 +58,9 @@ class ConvexPolygonFlow:
         dt: float = 0.01,
         seed: Optional[int] = None,
     ) -> None:
+        r"""
+        Initialize the object.
+        """
         verts = np.array(vertices, dtype=float)
         if verts.shape[0] < 3:
             raise ValueError("need at least three vertices for a polygon")
@@ -152,12 +155,18 @@ class ConvexPolygonFlow:
         gamma_range: Tuple[float, float],
         core_radius: float,
     ) -> List[Vortex]:
+        r"""
+        Internal helper method `_seed_vortices`.
+        """
         centers = self.sample_random_points(n_vortices)
         gammas = self.rng.uniform(gamma_range[0], gamma_range[1], size=n_vortices)
         return [Vortex(center=center, gamma=float(gamma), core_radius=core_radius)
                 for center, gamma in zip(centers, gammas)]
 
     def _advect_vortices(self, n_steps: int, dt: float) -> None:
+        r"""
+        Internal helper method `_advect_vortices`.
+        """
         if n_steps <= 0:
             return
         for _ in range(n_steps):
@@ -174,6 +183,9 @@ class ConvexPolygonFlow:
     # ------------------------------------------------------------------
     @staticmethod
     def _ensure_ccw(verts: np.ndarray) -> np.ndarray:
+        r"""
+        Internal helper method `_ensure_ccw`.
+        """
         area = 0.5 * np.sum(
             verts[:, 0] * np.roll(verts[:, 1], -1) - verts[:, 1] * np.roll(verts[:, 0], -1)
         )
@@ -183,6 +195,9 @@ class ConvexPolygonFlow:
 
     @staticmethod
     def _precompute_edges(verts: np.ndarray) -> List[Tuple[np.ndarray, float, np.ndarray]]:
+        r"""
+        Internal helper method `_precompute_edges`.
+        """
         edges: List[Tuple[np.ndarray, float, np.ndarray]] = []
         n = verts.shape[0]
         for i in range(n):
@@ -199,12 +214,18 @@ class ConvexPolygonFlow:
         return edges
 
     def _closest_edge(self, point: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray]:
+        r"""
+        Internal helper method `_closest_edge`.
+        """
         distances = [normal.dot(point) + c for normal, c, _ in self.edges]
         idx = int(np.argmin(np.abs(distances)))
         normal, _, tangent = self.edges[idx]
         return abs(distances[idx]), normal, tangent
 
     def _project_inside(self, point: np.ndarray) -> np.ndarray:
+        r"""
+        Internal helper method `_project_inside`.
+        """
         if self.path.contains_point(point):
             return point
         direction = self.centroid - point
@@ -215,6 +236,9 @@ class ConvexPolygonFlow:
         return self.centroid.copy()
 
     def _safe_point(self, coords: np.ndarray) -> np.ndarray:
+        r"""
+        Internal helper method `_safe_point`.
+        """
         if self.path.contains_point(coords):
             return coords
         return self._project_inside(coords)
@@ -223,6 +247,9 @@ class ConvexPolygonFlow:
     # field evaluation helpers
     # ------------------------------------------------------------------
     def _raw_velocity(self, point: np.ndarray, skip_index: Optional[int] = None) -> np.ndarray:
+        r"""
+        Internal helper method `_raw_velocity`.
+        """
         vel = np.zeros(2)
         for idx, vort in enumerate(self.vortices):
             if skip_index is not None and idx == skip_index:
@@ -232,6 +259,9 @@ class ConvexPolygonFlow:
 
     @staticmethod
     def _rankine_velocity(point: np.ndarray, vort: Vortex) -> np.ndarray:
+        r"""
+        Internal helper method `_rankine_velocity`.
+        """
         delta = point - vort.center
         r = np.linalg.norm(delta)
         if r < 1e-8:
@@ -245,6 +275,9 @@ class ConvexPolygonFlow:
         return vel_theta * tangential
 
     def _project_to_tangent(self, point: np.ndarray, velocity: np.ndarray) -> np.ndarray:
+        r"""
+        Internal helper method `_project_to_tangent`.
+        """
         distance, normal, tangent = self._closest_edge(point)
         if distance <= 0:
             return velocity - np.dot(velocity, normal) * normal

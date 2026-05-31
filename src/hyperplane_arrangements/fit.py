@@ -8,6 +8,19 @@ from sage.rings.real_mpfr import RR
 from .vector_field import VectorField, VectorFieldModule
 
 def fit_vf(A, Obs, mod_gens, verbose=True):
+    r"""
+    Fit a polynomial vector field to velocity data.
+
+    INPUT:
+
+    - ``points`` -- Coordinates of data points.
+    - ``velocities`` -- Velocity vectors at data points.
+    - ``degree`` -- Degree of the polynomial vector field.
+
+    OUTPUT:
+
+    - The fitted :class:`VectorField`.
+    """
     v1 = A.S.gens()
     if isinstance(mod_gens, VectorFieldModule):
         basis = mod_gens.affine_basis()
@@ -90,6 +103,9 @@ def fit_vf(A, Obs, mod_gens, verbose=True):
         raise ValueError(f"Error in fitting: {str(e)}")
 
 def fit_vorticity(A, Obs, mod_gens, verbose=True):
+    r"""
+    Fit a polynomial vector field to vorticity data.
+    """
     if A.n - 1 != 2:
         raise NotImplementedError('vorticity fitting currently supports only 2D domains')
 
@@ -183,6 +199,9 @@ def fit_vorticity(A, Obs, mod_gens, verbose=True):
 
 
 def given_min_error(A, P, e0, verbose=True):
+    r"""
+    Evaluate if a fit meets the minimum error threshold.
+    """
     G = VectorFieldModule(A.minimal_generators().gens[1:])  # exclude Euler
     k = G.gens[0].degree()
     if verbose:
