@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -788,6 +789,74 @@ struct StateKeyHash {
     }
 };
 
+// ---- Compact state keys for deduplication ----------------------------------
+// A search state is uniquely identified by (lines, seeds). We serialize it into
+// a flat, length-prefixed vector<int64_t> ("key words"); distinct states always
+// produce distinct key words. From the key words we derive either:
+//   * a 128-bit fingerprint (default "hash" dedup) -- tiny and fast, with a
+//     per-pair collision probability around 2^-128 (negligible in practice), or
+//   * the exact key words themselves ("exact" dedup) -- bit-exact but heavier.
+struct Fingerprint {
+    uint64_t a = 0;
+    uint64_t b = 0;
+};
+
+inline bool operator==(const Fingerprint& lhs, const Fingerprint& rhs) {
+    return lhs.a == rhs.a && lhs.b == rhs.b;
+}
+
+struct FingerprintHash {
+    std::size_t operator()(const Fingerprint& f) const {
+        return static_cast<std::size_t>(f.a ^ (f.b * 0x9e3779b97f4a7c15ULL));
+    }
+};
+
+struct KeyWordsHash {
+    std::size_t operator()(const std::vector<int64_t>& v) const {
+        uint64_t h = 1469598103934665603ULL ^ static_cast<uint64_t>(v.size());
+        for (int64_t w : v) {
+            uint64_t x = static_cast<uint64_t>(w);
+            x ^= x >> 33;
+            x *= 0xff51afd7ed558ccdULL;
+            x ^= x >> 33;
+            h ^= x;
+            h *= 0x100000001b3ULL;
+        }
+        h ^= h >> 29;
+        return static_cast<std::size_t>(h);
+    }
+};
+
+// Two reasonably independent 64-bit mixes over the same key words -> 128-bit id.
+inline Fingerprint fingerprint_words(const std::vector<int64_t>& v) {
+    uint64_t h1 = 0x9e3779b97f4a7c15ULL ^ static_cast<uint64_t>(v.size());
+    uint64_t h2 = 0xc2b2ae3d27d4eb4fULL + static_cast<uint64_t>(v.size()) * 0x100000001b3ULL;
+    for (int64_t w : v) {
+        const uint64_t x = static_cast<uint64_t>(w);
+        uint64_t y = x;
+        y ^= y >> 33;
+        y *= 0xff51afd7ed558ccdULL;
+        y ^= y >> 33;
+        h1 ^= y;
+        h1 *= 0x100000001b3ULL;
+        h1 ^= h1 >> 29;
+        uint64_t z = x;
+        z ^= z >> 29;
+        z *= 0xc2b2ae3d27d4eb4fULL;
+        z ^= z >> 32;
+        h2 += z;
+        h2 *= 0x9e3779b97f4a7c15ULL;
+        h2 ^= h2 >> 31;
+    }
+    h1 ^= h1 >> 33;
+    h1 *= 0xc4ceb9fe1a85ec53ULL;
+    h1 ^= h1 >> 33;
+    h2 ^= h2 >> 31;
+    h2 *= 0xbf58476d1ce4e5b9ULL;
+    h2 ^= h2 >> 33;
+    return Fingerprint{h1, h2};
+}
+
 class FinalizedResultCollector {
 public:
     using BestMap = std::unordered_map<std::vector<int>, BestRecord, VectorIntHash>;
@@ -920,25 +989,40 @@ private:
     bool return_all_minimal_ = false;
 };
 
+// Thread-shared dedup set used to coordinate workers near the frontier.
+// Only one of the two backing stores is populated, chosen by `hash_mode`.
 class SharedVisited {
 public:
-    explicit SharedVisited(std::size_t shard_count = 256) : shards_(std::max<std::size_t>(1, shard_count)) {}
+    SharedVisited(bool hash_mode, std::size_t shard_count)
+        : fp_shards_(hash_mode ? std::max<std::size_t>(1, shard_count) : std::size_t{0}),
+          ex_shards_(hash_mode ? std::size_t{0} : std::max<std::size_t>(1, shard_count)) {}
 
-    bool try_mark(const StateKey& key) {
-        std::size_t h = StateKeyHash{}(key);
-        Shard& shard = shards_[h % shards_.size()];
+    bool try_mark(const Fingerprint& fp) {
+        std::size_t h = FingerprintHash{}(fp);
+        FpShard& shard = fp_shards_[h % fp_shards_.size()];
         std::lock_guard<std::mutex> lock(shard.mu);
-        auto [_, inserted] = shard.states.insert(key);
-        return inserted;
+        return shard.states.insert(fp).second;
+    }
+
+    bool try_mark(const std::vector<int64_t>& key) {
+        std::size_t h = KeyWordsHash{}(key);
+        ExShard& shard = ex_shards_[h % ex_shards_.size()];
+        std::lock_guard<std::mutex> lock(shard.mu);
+        return shard.states.insert(key).second;
     }
 
 private:
-    struct Shard {
+    struct FpShard {
         std::mutex mu;
-        std::unordered_set<StateKey, StateKeyHash> states;
+        std::unordered_set<Fingerprint, FingerprintHash> states;
+    };
+    struct ExShard {
+        std::mutex mu;
+        std::unordered_set<std::vector<int64_t>, KeyWordsHash> states;
     };
 
-    std::vector<Shard> shards_;
+    std::vector<FpShard> fp_shards_;
+    std::vector<ExShard> ex_shards_;
 };
 
 inline bool stderr_is_tty() {
@@ -949,55 +1033,112 @@ inline bool stderr_is_tty() {
 #endif
 }
 
-class ProgressBar {
+// Per-worker progress accumulator. Each frontier subtree is worth one "unit"
+// (= `subtree_ticks` ticks). Within a subtree the search distributes the unit
+// fractionally by node weight (a node with k children passes weight/k to each),
+// so the reported fraction advances smoothly instead of jumping per subtree.
+// Updates are batched to limit atomic contention, and every finished subtree is
+// snapped to contribute exactly one unit so the total converges to 100%.
+struct ProgressReporter {
+    std::atomic<uint64_t>* ticks = nullptr;  // shared sink (null => disabled)
+    uint64_t subtree_ticks = 0;
+    uint64_t flushed = 0;
+    double pending = 0.0;
+
+    void begin_subtree() {
+        flushed = 0;
+        pending = 0.0;
+    }
+
+    void add(double weight) {
+        if (ticks == nullptr) {
+            return;
+        }
+        pending += weight * static_cast<double>(subtree_ticks);
+        if (pending >= 4096.0) {
+            const uint64_t inc = static_cast<uint64_t>(pending);
+            ticks->fetch_add(inc, std::memory_order_relaxed);
+            flushed += inc;
+            pending -= static_cast<double>(inc);
+        }
+    }
+
+    void end_subtree() {
+        if (ticks == nullptr) {
+            return;
+        }
+        if (flushed < subtree_ticks) {
+            ticks->fetch_add(subtree_ticks - flushed, std::memory_order_relaxed);
+        }
+        flushed = 0;
+        pending = 0.0;
+    }
+};
+
+// Renders an estimate of how much of the search tree has been explored. The
+// fraction is interpolated from the shared tick counter fed by ProgressReporter
+// instances, and refreshed from a dedicated thread so worker threads never block
+// on rendering.
+class ProgressMonitor {
 public:
-    ProgressBar(std::string label, std::size_t total, bool enabled)
+    ProgressMonitor(std::string label, std::size_t subtree_count, uint64_t subtree_ticks, bool enabled)
         : label_(std::move(label)),
-          total_(std::max<std::size_t>(total, 1)),
+          subtree_ticks_(std::max<uint64_t>(1, subtree_ticks)),
+          subtree_count_(subtree_count),
+          total_ticks_(std::max<uint64_t>(1, static_cast<uint64_t>(subtree_count) * std::max<uint64_t>(1, subtree_ticks))),
           enabled_(enabled),
           interactive_(enabled && stderr_is_tty()),
-          render_interval_(interactive_ ? std::chrono::milliseconds(100) : std::chrono::seconds(2)),
-          start_(Clock::now()),
-          last_render_(start_) {
-        if (enabled_) {
-            render_locked(0, start_);
-        }
-    }
+          start_(Clock::now()) {}
 
-    void advance(std::size_t delta = 1) {
+    std::atomic<uint64_t>* ticks_ptr() { return &ticks_; }
+    uint64_t subtree_ticks() const { return subtree_ticks_; }
+
+    void start() {
         if (!enabled_) {
             return;
         }
-        const auto now = Clock::now();
-        std::lock_guard<std::mutex> lock(mu_);
-        if (finished_) {
-            return;
-        }
-        completed_ = std::min(total_, completed_ + delta);
-        if (completed_ < total_ && now - last_render_ < render_interval_) {
-            return;
-        }
-        render_locked(completed_, now);
+        render(0);
+        thread_ = std::thread([this]() { loop(); });
     }
 
-    void finish() {
+    void stop() {
         if (!enabled_) {
             return;
         }
-        const auto now = Clock::now();
-        std::lock_guard<std::mutex> lock(mu_);
-        if (finished_) {
-            return;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            stop_ = true;
         }
-        completed_ = total_;
-        render_locked(completed_, now);
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        render(total_ticks_, true);
     }
 
 private:
     using Clock = std::chrono::steady_clock;
 
-    static std::string format_elapsed(Clock::duration elapsed) {
-        const auto total_seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    void loop() {
+        std::unique_lock<std::mutex> lock(mu_);
+        const auto interval = interactive_ ? std::chrono::milliseconds(200) : std::chrono::milliseconds(2000);
+        while (!stop_) {
+            cv_.wait_for(lock, interval, [this]() { return stop_; });
+            if (stop_) {
+                break;
+            }
+            const uint64_t done = ticks_.load(std::memory_order_relaxed);
+            lock.unlock();
+            render(done);
+            lock.lock();
+        }
+    }
+
+    static std::string format_time(Clock::duration d) {
+        auto total_seconds = std::chrono::duration_cast<std::chrono::seconds>(d).count();
+        if (total_seconds < 0) {
+            total_seconds = 0;
+        }
         const auto hours = total_seconds / 3600;
         const auto minutes = (total_seconds / 60) % 60;
         const auto seconds = total_seconds % 60;
@@ -1013,23 +1154,33 @@ private:
         return oss.str();
     }
 
-    void render_locked(std::size_t completed, Clock::time_point now) {
+    void render(uint64_t done, bool finished = false) {
         static constexpr std::size_t kBarWidth = 30;
-
-        const double ratio = static_cast<double>(completed) / static_cast<double>(total_);
+        if (done > total_ticks_) {
+            done = total_ticks_;
+        }
+        const double ratio = static_cast<double>(done) / static_cast<double>(total_ticks_);
         std::size_t filled = static_cast<std::size_t>(ratio * static_cast<double>(kBarWidth));
         if (filled > kBarWidth) {
             filled = kBarWidth;
         }
 
+        const auto elapsed = Clock::now() - start_;
         std::ostringstream oss;
         oss << "[progress] " << label_ << " ["
             << std::string(filled, '#')
             << std::string(kBarWidth - filled, '-')
-            << "] "
-            << completed << '/' << total_
-            << ' ' << std::fixed << std::setprecision(1) << (ratio * 100.0) << '%'
-            << " elapsed " << format_elapsed(now - start_);
+            << "] " << std::fixed << std::setprecision(1) << (ratio * 100.0) << '%';
+        if (subtree_count_ > 0) {
+            const double approx = static_cast<double>(done) / static_cast<double>(subtree_ticks_);
+            oss << " (~" << static_cast<uint64_t>(approx + 0.5) << '/' << subtree_count_ << " subtrees)";
+        }
+        oss << " elapsed " << format_time(elapsed);
+        if (!finished && ratio > 1e-4) {
+            const double elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(elapsed).count();
+            const double eta_s = elapsed_s * (1.0 - ratio) / ratio;
+            oss << " eta " << format_time(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(eta_s)));
+        }
         const std::string line = oss.str();
 
         if (interactive_) {
@@ -1039,32 +1190,28 @@ private:
             }
             std::cerr << std::flush;
             last_line_size_ = line.size();
-            if (completed >= total_) {
+            if (finished) {
                 std::cerr << '\n';
-                finished_ = true;
                 last_line_size_ = 0;
             }
         } else {
             std::cerr << line << '\n';
-            if (completed >= total_) {
-                finished_ = true;
-            }
         }
-
-        last_render_ = now;
     }
 
     std::string label_;
-    std::size_t total_ = 1;
-    bool enabled_ = false;
-    bool interactive_ = false;
-    std::chrono::steady_clock::duration render_interval_{};
+    uint64_t subtree_ticks_;
+    std::size_t subtree_count_;
+    uint64_t total_ticks_;
+    bool enabled_;
+    bool interactive_;
     Clock::time_point start_;
-    Clock::time_point last_render_;
-    std::size_t completed_ = 0;
-    std::size_t last_line_size_ = 0;
-    bool finished_ = false;
+    std::atomic<uint64_t> ticks_{0};
+    bool stop_ = false;  // guarded by mu_
+    std::thread thread_;
     std::mutex mu_;
+    std::condition_variable cv_;
+    std::size_t last_line_size_ = 0;
 };
 
 inline Normal normalize_normal(int64_t nx, int64_t ny) {
@@ -1135,8 +1282,8 @@ private:
     };
 
 public:
-    GreedyCutAllSolver(const std::vector<Normal>& normals, const std::vector<int>& max_counts, bool return_all_minimal = false)
-        : return_all_minimal_(return_all_minimal) {
+    GreedyCutAllSolver(const std::vector<Normal>& normals, const std::vector<int>& max_counts, bool return_all_minimal = false, bool use_hash_dedup = true)
+        : return_all_minimal_(return_all_minimal), use_hash_dedup_(use_hash_dedup) {
         auto merged = merge_normals(normals, max_counts);
         normals_ = std::move(merged.first);
         max_counts_ = std::move(merged.second);
@@ -1172,7 +1319,7 @@ public:
 
     std::vector<std::pair<std::vector<int>, Solution>> solve_all() {
         reset_search_context();
-        dfs(initial_state());
+        dfs(initial_state(), 1.0);
         return build_solutions(best_for_counts_);
     }
 
@@ -1204,15 +1351,19 @@ public:
         if (show_progress) {
             std::cerr << "[progress] processing " << frontier.size() << " frontier subtrees\n";
         }
-        ProgressBar progress_bar("serial search", frontier.size(), show_progress);
-        SharedVisited shared_visited(256);
+        ProgressMonitor monitor("serial search", frontier.size(), kSubtreeTicks, show_progress);
+        if (show_progress) {
+            set_progress_sink(monitor.ticks_ptr(), monitor.subtree_ticks());
+        }
+        monitor.start();
+        SharedVisited shared_visited(use_hash_dedup_, 256);
         const int shared_depth_limit = std::numeric_limits<int>::max();
         for (std::size_t idx = 0; idx < frontier.size(); ++idx) {
             BestMap partial = solve_subtree(frontier[idx], &shared_visited, shared_depth_limit);
             collector.complete_task(idx, std::move(partial));
-            progress_bar.advance();
         }
-        progress_bar.finish();
+        monitor.stop();
+        set_progress_sink(nullptr, 0);
         return build_solutions(collector.take_merged());
     }
 
@@ -1258,9 +1409,10 @@ public:
             std::cerr << "[progress] processing " << frontier.size()
                       << " frontier subtrees with " << workers << " workers\n";
         }
-        ProgressBar progress_bar("parallel search", frontier.size(), show_progress);
+        ProgressMonitor monitor("parallel search", frontier.size(), kSubtreeTicks, show_progress);
+        monitor.start();
         std::atomic<std::size_t> next_index{0};
-        SharedVisited shared_visited(static_cast<std::size_t>(workers) * 256);
+        SharedVisited shared_visited(use_hash_dedup_, static_cast<std::size_t>(workers) * 256);
         const int shared_depth_limit = split_depth + 2;
         std::vector<std::size_t> task_counts(static_cast<std::size_t>(workers), 0);
         if (debug_parallel) {
@@ -1275,7 +1427,10 @@ public:
 
         for (int w = 0; w < workers; ++w) {
             threads.emplace_back([&, w]() {
-                GreedyCutAllSolver worker_solver(normals_, max_counts_, return_all_minimal_);
+                GreedyCutAllSolver worker_solver(normals_, max_counts_, return_all_minimal_, use_hash_dedup_);
+                if (show_progress) {
+                    worker_solver.set_progress_sink(monitor.ticks_ptr(), monitor.subtree_ticks());
+                }
                 while (true) {
                     std::size_t idx = next_index.fetch_add(1);
                     if (idx >= frontier.size()) {
@@ -1284,14 +1439,13 @@ public:
                     ++task_counts[static_cast<std::size_t>(w)];
                     BestMap partial = worker_solver.solve_subtree(frontier[idx], &shared_visited, shared_depth_limit);
                     collector.complete_task(idx, std::move(partial));
-                    progress_bar.advance();
                 }
             });
         }
         for (std::thread& t : threads) {
             t.join();
         }
-        progress_bar.finish();
+        monitor.stop();
 
         if (debug_parallel) {
             std::cerr << "[parallel] task_counts=[";
@@ -1307,15 +1461,22 @@ public:
     }
 
 private:
+    // Resolution of the per-subtree progress unit (ticks). Higher = smoother.
+    static constexpr uint64_t kSubtreeTicks = 1u << 16;
+
     std::vector<Normal> normals_;
     std::vector<int> max_counts_;
     int m_ = 0;
 
     BestMap best_for_counts_;
-    std::unordered_set<StateKey, StateKeyHash> visited_;
+    std::unordered_set<Fingerprint, FingerprintHash> visited_fp_;
+    std::unordered_set<std::vector<int64_t>, KeyWordsHash> visited_exact_;
+    std::vector<int64_t> key_scratch_;  // reused serialization buffer (hash mode)
     SharedVisited* shared_visited_ = nullptr;
     int shared_depth_limit_ = std::numeric_limits<int>::max();
     bool return_all_minimal_ = false;
+    bool use_hash_dedup_ = true;
+    ProgressReporter progress_;
 
     std::unordered_map<DotKey, Rational, DotKeyHash> dot_cache_;
     std::unordered_map<InterKey, std::optional<Point>, InterKeyHash> intersection_cache_;
@@ -1381,11 +1542,36 @@ private:
 
     void reset_search_context() {
         best_for_counts_.clear();
-        visited_.clear();
+        visited_fp_.clear();
+        visited_exact_.clear();
         shared_visited_ = nullptr;
         shared_depth_limit_ = std::numeric_limits<int>::max();
         dot_cache_.clear();
         intersection_cache_.clear();
+    }
+
+    void serialize_state(const SearchState& state, std::vector<int64_t>& buf) const {
+        buf.clear();
+        for (int i = 0; i < m_; ++i) {
+            const auto& offsets = state.lines[i];
+            buf.push_back(static_cast<int64_t>(offsets.size()));
+            for (const Rational& r : offsets) {
+                buf.push_back(r.num);
+                buf.push_back(r.den);
+            }
+        }
+        buf.push_back(static_cast<int64_t>(state.seeds.size()));
+        for (const Point& p : state.seeds) {
+            buf.push_back(p.x.num);
+            buf.push_back(p.x.den);
+            buf.push_back(p.y.num);
+            buf.push_back(p.y.den);
+        }
+    }
+
+    void set_progress_sink(std::atomic<uint64_t>* ticks, uint64_t subtree_ticks) {
+        progress_.ticks = ticks;
+        progress_.subtree_ticks = subtree_ticks;
     }
 
     static int choose_frontier_split_depth(int num_threads, int split_depth) {
@@ -1441,7 +1627,9 @@ private:
         reset_search_context();
         shared_visited_ = shared_visited;
         shared_depth_limit_ = shared_depth_limit;
-        dfs(start);
+        progress_.begin_subtree();
+        dfs(start, 1.0);
+        progress_.end_subtree();
         shared_visited_ = nullptr;
         shared_depth_limit_ = std::numeric_limits<int>::max();
         return std::move(best_for_counts_);
@@ -1482,7 +1670,10 @@ private:
         return frontier;
     }
 
-    std::vector<SearchState> generate_children(const SearchState& state, const std::vector<int>& counts) {
+    // Enumerate and order the line-adding moves available from `state`. An empty
+    // result means no line can be added (caller should try a seed point).
+    std::vector<Move> compute_moves(const SearchState& state, const std::vector<int>& counts) {
+        std::vector<Move> moves;
         std::vector<int> active_dirs;
         for (int i = 0; i < m_; ++i) {
             if (counts[i] < max_counts_[i]) {
@@ -1490,11 +1681,11 @@ private:
             }
         }
         if (active_dirs.empty()) {
-            return {};
+            return moves;
         }
 
         // 高速化：動的メモリ確保(unordered_map等)を減らすため、vectorとsort/uniqueを利用
-        std::vector<Move> moves;
+        std::vector<int> other_lines;
         for (int i : active_dirs) {
             const auto& existing_offsets = state.lines[i];
             std::vector<Rational> candidate_offsets;
@@ -1509,12 +1700,12 @@ private:
             if (candidate_offsets.empty()) {
                 continue;
             }
-            
+
             // 重複排除
             std::sort(candidate_offsets.begin(), candidate_offsets.end());
             candidate_offsets.erase(std::unique(candidate_offsets.begin(), candidate_offsets.end()), candidate_offsets.end());
 
-            std::vector<int> other_lines;
+            other_lines.clear();
             for (int j = 0; j < m_; ++j) {
                 if (j != i && !state.lines[j].empty()) {
                     other_lines.push_back(j);
@@ -1545,32 +1736,47 @@ private:
             }
             return lhs.c < rhs.c;
         });
+        return moves;
+    }
 
-        if (moves.empty()) {
-            auto seed = next_seed_point(state.lines, counts, state.seeds);
-            if (!seed.has_value() || contains_point(state.points, *seed)) {
-                return {};
-            }
-            SearchState seeded;
-            seeded.lines = state.lines;
-            seeded.points = add_point(state.points, *seed);
-            seeded.seeds = add_point(state.seeds, *seed);
-            seeded.regions = state.regions;
-            seeded.depth = state.depth + 1;
-            return {std::move(seeded)};
+    SearchState make_move_child(const SearchState& state, const Move& move) {
+        SearchState child;
+        child.lines = state.lines;
+        insert_offset(child.lines[move.dir], move.c);
+        child.points = union_points(state.points, move.new_points);
+        child.seeds = state.seeds;
+        child.regions = state.regions + move.delta;
+        child.depth = state.depth + 1;
+        return child;
+    }
+
+    std::optional<SearchState> make_seed_child(const SearchState& state, const std::vector<int>& counts) {
+        auto seed = next_seed_point(state.lines, counts, state.seeds);
+        if (!seed.has_value() || contains_point(state.points, *seed)) {
+            return std::nullopt;
         }
+        SearchState seeded;
+        seeded.lines = state.lines;
+        seeded.points = add_point(state.points, *seed);
+        seeded.seeds = add_point(state.seeds, *seed);
+        seeded.regions = state.regions;
+        seeded.depth = state.depth + 1;
+        return seeded;
+    }
 
+    std::vector<SearchState> generate_children(const SearchState& state, const std::vector<int>& counts) {
+        std::vector<Move> moves = compute_moves(state, counts);
+        if (moves.empty()) {
+            auto seeded = make_seed_child(state, counts);
+            if (seeded.has_value()) {
+                return {std::move(*seeded)};
+            }
+            return {};
+        }
         std::vector<SearchState> children;
         children.reserve(moves.size());
         for (const Move& move : moves) {
-            SearchState child;
-            child.lines = state.lines;
-            insert_offset(child.lines[move.dir], move.c);
-            child.points = union_points(state.points, move.new_points);
-            child.seeds = state.seeds;
-            child.regions = state.regions + move.delta;
-            child.depth = state.depth + 1;
-            children.push_back(std::move(child));
+            children.push_back(make_move_child(state, move));
         }
         return children;
     }
@@ -1705,27 +1911,57 @@ private:
         }
     }
 
-    void dfs(const SearchState& state) {
-        StateKey state_key{state.lines, state.seeds};
-        if (visited_.find(state_key) != visited_.end()) {
-            return;
-        }
-        visited_.insert(state_key);
-
-        if (
-            shared_visited_ != nullptr &&
-            state.depth <= shared_depth_limit_ &&
-            !shared_visited_->try_mark(state_key)
-        ) {
-            return;
+    // `weight` is this node's share of the enclosing subtree (root == 1.0); it is
+    // split evenly across children and credited to the progress sink at leaves
+    // and pruned (already-visited) nodes. See ProgressReporter.
+    void dfs(const SearchState& state, double weight) {
+        // Deduplicate identical (lines, seeds) states reached via different paths.
+        if (use_hash_dedup_) {
+            serialize_state(state, key_scratch_);
+            const Fingerprint fp = fingerprint_words(key_scratch_);
+            if (!visited_fp_.insert(fp).second) {
+                progress_.add(weight);
+                return;
+            }
+            if (shared_visited_ != nullptr && state.depth <= shared_depth_limit_ &&
+                !shared_visited_->try_mark(fp)) {
+                progress_.add(weight);
+                return;
+            }
+        } else {
+            std::vector<int64_t> buf;
+            serialize_state(state, buf);
+            auto [it, inserted] = visited_exact_.insert(std::move(buf));
+            if (!inserted) {
+                progress_.add(weight);
+                return;
+            }
+            if (shared_visited_ != nullptr && state.depth <= shared_depth_limit_ &&
+                !shared_visited_->try_mark(*it)) {
+                progress_.add(weight);
+                return;
+            }
         }
 
         std::vector<int> counts = counts_from_lines(state.lines);
         record_into_map(best_for_counts_, counts, state.regions, state.lines, state.seeds);
 
-        std::vector<SearchState> children = generate_children(state, counts);
-        for (const SearchState& child : children) {
-            dfs(child);
+        // Generate children lazily (one at a time) so we never hold the full set
+        // of sibling states simultaneously -- a large peak-memory reduction.
+        std::vector<Move> moves = compute_moves(state, counts);
+        if (moves.empty()) {
+            std::optional<SearchState> seeded = make_seed_child(state, counts);
+            if (!seeded.has_value()) {
+                progress_.add(weight);
+                return;
+            }
+            dfs(*seeded, weight);
+            return;
+        }
+
+        const double child_weight = weight / static_cast<double>(moves.size());
+        for (const Move& move : moves) {
+            dfs(make_move_child(state, move), child_weight);
         }
     }
 };
@@ -1814,6 +2050,17 @@ bool parse_optional_bool(const JsonValue& root, const std::string& key, bool def
         return default_value;
     }
     return v->as_bool(key);
+}
+
+std::string parse_optional_string(const JsonValue& root, const std::string& key, const std::string& default_value) {
+    const JsonValue* v = root.find_key(key);
+    if (v == nullptr) {
+        return default_value;
+    }
+    if (v->type != JsonValue::Type::kString) {
+        throw std::runtime_error(key + " must be a string");
+    }
+    return v->string_value;
 }
 
 void print_results_json(
@@ -1925,7 +2172,8 @@ int main(int argc, char* argv[]) {
     try {
         if (argc != 2 && argc != 3) {
             std::cerr << "Usage: " << argv[0] << " <input.json> [output.json]\n";
-            std::cerr << "Optional JSON keys: threads (>=1), split_depth (>=0; 0=auto), progress (true/false)\n";
+            std::cerr << "Optional JSON keys: threads (>=1), split_depth (>=0; 0=auto), progress (true/false),\n";
+            std::cerr << "                   dedup (\"hash\"=default, fast/low-memory; \"exact\"=bit-exact)\n";
             return 1;
         }
 
@@ -1948,8 +2196,17 @@ int main(int argc, char* argv[]) {
         int split_depth = parse_optional_nonnegative_int(root, "split_depth", 0);
         bool progress = parse_optional_bool(root, "progress", stderr_is_tty());
         bool return_all_minimal = parse_optional_bool(root, "return_all_minimal", false);
+        std::string dedup = parse_optional_string(root, "dedup", "hash");
+        bool use_hash_dedup;
+        if (dedup == "hash") {
+            use_hash_dedup = true;
+        } else if (dedup == "exact") {
+            use_hash_dedup = false;
+        } else {
+            throw std::runtime_error("dedup must be \"hash\" or \"exact\"");
+        }
 
-        GreedyCutAllSolver solver(normals, max_counts, return_all_minimal);
+        GreedyCutAllSolver solver(normals, max_counts, return_all_minimal, use_hash_dedup);
         std::optional<IncrementalJsonWriter> incremental_writer;
         if (argc == 3) {
             incremental_writer.emplace(argv[2], solver.merged_normals(), return_all_minimal);

@@ -1004,16 +1004,34 @@ class CppGreedyCutAllSolver:
         threads: int = 1,
         split_depth: int = 0,
         return_all_minimal: bool = False,
+        progress: bool = False,
+        dedup: str = "hash",
         solver_path: Optional[str] = None
     ) -> None:
         r"""
         Initialize the object.
+
+        Additional options:
+
+        - ``progress`` -- if ``True``, the C++ solver prints a tree-exploration
+          progress estimate (percent complete, with ETA) to stderr.
+        - ``dedup`` -- deduplication strategy for the search:
+
+          * ``"hash"`` (default): a 128-bit state fingerprint; much faster and
+            uses far less memory. The collision probability (~1e-23 per state
+            pair) is negligible in practice.
+          * ``"exact"``: bit-exact deduplication; slower and more memory-hungry,
+            but with a zero chance of (astronomically unlikely) hash collisions.
         """
         self.normals = [(int(a), int(b)) for a, b in normals]
         self.max_counts = [int(x) for x in max_counts]
         self.threads = int(threads)
         self.split_depth = int(split_depth)
         self.return_all_minimal = return_all_minimal
+        self.progress = bool(progress)
+        if dedup not in ("hash", "exact"):
+            raise ValueError('dedup must be "hash" or "exact"')
+        self.dedup = dedup
 
         if solver_path is None:
             # default path relative to this file
@@ -1041,7 +1059,9 @@ class CppGreedyCutAllSolver:
             "max_counts": self.max_counts,
             "threads": self.threads,
             "split_depth": self.split_depth,
-            "return_all_minimal": self.return_all_minimal
+            "return_all_minimal": self.return_all_minimal,
+            "progress": self.progress,
+            "dedup": self.dedup
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
